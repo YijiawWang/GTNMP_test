@@ -1,5 +1,7 @@
 # TNMP Sub-Tensor Networks and Contraction Space Complexity
 
+![get cavity](get_cavity.png)
+
 This document maps the TreeSA contraction-complexity results in [`contraction_sc_results.md`](contraction_sc_results.md) to the four schematic figures and the [`TNMP_test`](../../../TNMP_test) implementation. It explains how the **cavity** (message update) and **neighborhood** (marginal contraction) sub-TNs are built in the **rank-1** and **rank-2** settings.
 
 ---
