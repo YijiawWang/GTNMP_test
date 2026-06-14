@@ -57,3 +57,4 @@ end
 
 include("test_contraction_sc.jl")
 include("test_first_order_tree.jl")
+include("test_boundarymps_random_double_layer.jl")

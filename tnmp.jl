@@ -16,10 +16,15 @@ using ITensors:
     onehot,
     prime,
     replaceinds
+using Base.Threads
 using LinearAlgebra: dot
 using NamedGraphs: NamedEdge, NamedGraph, add_edge!, dst, edges, neighbors, src, vertices
-using Random: AbstractRNG
+using Random: AbstractRNG, rand
 import ITensors
+
+# `nthreads <= 0` or `nothing` -> use all Julia threads (`Threads.nthreads()`).
+message_passing_nthreads(nthreads::Union{Nothing, Integer} = nothing) =
+    nthreads === nothing || Int(nthreads) <= 0 ? Threads.nthreads() : Int(nthreads)
 
 export TNMPCache,
     contraction_sc,
@@ -29,7 +34,9 @@ export TNMPCache,
     incoming_boundary_edges,
     marginal_tensors,
     message_tensors,
+    random_alpha_state,
     random_state,
+    random_uniform_complex_state,
     run_message_passing!,
     siteinds,
     tnmp_marginal
@@ -53,6 +60,13 @@ end
 
 function random_entry(rng::AbstractRNG, ::Type{Float64})
     return randn(rng)
+end
+
+# Independent Uniform(lo, hi) draws for the real and imaginary parts.
+function random_uniform_complex_entry(rng::AbstractRNG; lo::Real = 0.0, hi::Real = 1.0)
+    lo_f = Float64(lo)
+    width = Float64(hi - lo)
+    return complex(lo_f + width * rand(rng), lo_f + width * rand(rng))
 end
 
 function random_state(
@@ -84,6 +98,88 @@ function random_state(
         tensor = ITensor(element_type, local_inds)
         for iv in eachindval(tensor)
             tensor[iv...] = random_entry(rng, element_type)
+        end
+        tensors[v] = tensor
+    end
+
+    return TensorNetworkState(tensors, Dict(v => Index[sitedict[v]] for v in vs), g)
+end
+
+# Random complex PEPS: each entry is complex(re ~ Uniform(lo, hi), im ~ Uniform(lo, hi))
+# with independent real/imag draws. The double-layer norm network is built from
+# these ket tensors via `traced_norm_factors`.
+function random_uniform_complex_state(
+        rng::AbstractRNG,
+        g::NamedGraph;
+        physical_dim::Integer = 2,
+        bond_dim::Integer = 2,
+        lo::Real = 0.0,
+        hi::Real = 1.0,
+    )
+    physical_dim > 0 || throw(ArgumentError("physical_dim must be positive"))
+    bond_dim > 0 || throw(ArgumentError("bond_dim must be positive"))
+    lo <= hi || throw(ArgumentError("require lo <= hi, got lo=$lo hi=$hi"))
+
+    vs = collect(vertices(g))
+    sitedict = Dict(v => Index(physical_dim, "phys,v=$v") for v in vs)
+
+    edgeinds = Dict{Any, Index}()
+    for e in edges(g)
+        ind = Index(bond_dim, "bond,$(src(e))-$(dst(e))")
+        edgeinds[e] = ind
+        edgeinds[reverse_edge(e)] = ind
+    end
+
+    tensors = Dict{eltype(vs), ITensor}()
+    for v in vs
+        local_inds = Index[sitedict[v]]
+        for vn in neighbors(g, v)
+            push!(local_inds, edgeinds[NamedEdge(v => vn)])
+        end
+        tensor = ITensor(ComplexF64, local_inds)
+        for iv in eachindval(tensor)
+            tensor[iv...] = random_uniform_complex_entry(rng; lo, hi)
+        end
+        tensors[v] = tensor
+    end
+
+    return TensorNetworkState(tensors, Dict(v => Index[sitedict[v]] for v in vs), g)
+end
+
+# Random PEPS from arXiv:2604.24760: each ket entry is Uniform(-alpha, 1-alpha).
+# The double-layer norm network is built from these ket tensors via `traced_norm_factors`.
+function random_alpha_state(
+        rng::AbstractRNG,
+        g::NamedGraph;
+        alpha::Real = 0.5,
+        physical_dim::Integer = 2,
+        bond_dim::Integer = 2,
+    )
+    0 <= alpha <= 1 || throw(ArgumentError("alpha must be in [0, 1], got $alpha"))
+    physical_dim > 0 || throw(ArgumentError("physical_dim must be positive"))
+    bond_dim > 0 || throw(ArgumentError("bond_dim must be positive"))
+
+    vs = collect(vertices(g))
+    sitedict = Dict(v => Index(physical_dim, "phys,v=$v") for v in vs)
+
+    edgeinds = Dict{Any, Index}()
+    for e in edges(g)
+        ind = Index(bond_dim, "bond,$(src(e))-$(dst(e))")
+        edgeinds[e] = ind
+        edgeinds[reverse_edge(e)] = ind
+    end
+
+    lo = -Float64(alpha)
+    width = 1.0
+    tensors = Dict{eltype(vs), ITensor}()
+    for v in vs
+        local_inds = Index[sitedict[v]]
+        for vn in neighbors(g, v)
+            push!(local_inds, edgeinds[NamedEdge(v => vn)])
+        end
+        tensor = ITensor(ComplexF64, local_inds)
+        for iv in eachindval(tensor)
+            tensor[iv...] = complex(lo + width * rand(rng))
         end
         tensors[v] = tensor
     end
@@ -298,6 +394,7 @@ struct TNMPCache
     messages::Dict{Tuple{Any, NamedEdge}, ITensor}
     contraction_sequences::Dict{Any, Any}
     normalize::Symbol
+    sequence_lock::ReentrantLock
 end
 
 # `region_fn(gp, g, node)` returns the neighborhood (a vector of original-graph
@@ -326,16 +423,89 @@ function TNMPCache(
         Dict{Tuple{Any, NamedEdge}, ITensor}(),
         Dict{Any, Any}(),
         normalize,
+        ReentrantLock(),
     )
 end
 
 function get_contraction_sequence!(cache::TNMPCache, key, tensors::Vector{<:ITensor})
-    if haskey(cache.contraction_sequences, key)
-        return cache.contraction_sequences[key]
+    return _ensure_contraction_sequence!(
+        cache.contraction_sequences, cache.sequence_lock, key, tensors,
+    )
+end
+
+# Compute TreeSA outside the lock so independent keys can optimize in parallel.
+function _ensure_contraction_sequence!(
+        sequences::Dict{Any, Any},
+        seq_lock::ReentrantLock,
+        key,
+        tensors::Vector{<:ITensor},
+    )
+    if haskey(sequences, key)
+        return sequences[key]
     end
     seq = contraction_sequence(tensors)
-    cache.contraction_sequences[key] = seq
-    return seq
+    lock(seq_lock) do
+        if haskey(sequences, key)
+            return sequences[key]
+        end
+        sequences[key] = seq
+        return seq
+    end
+end
+
+function rank2_message_prewarm_specs(
+        cache::TNMPCache,
+        keys_to_update::Vector{Tuple{Any, NamedEdge}},
+    )
+    specs = Tuple{Any, Vector{ITensor}}[]
+    for (center_node, e) in keys_to_update
+        tensors = message_tensors(cache, center_node, e)
+        isempty(tensors) && continue
+        push!(specs, ((:message, center_node, e), tensors))
+    end
+    return specs
+end
+
+function prewarm_contraction_sequences!(
+        sequences::Dict{Any, Any},
+        seq_lock::ReentrantLock,
+        specs::Vector{Tuple{Any, Vector{ITensor}}},
+        ;
+        nthreads::Union{Nothing, Integer} = nothing,
+        progress_label::AbstractString = "",
+    )
+    isempty(specs) && return 0
+    nt = message_passing_nthreads(nthreads)
+    n = length(specs)
+    if nt <= 1
+        for (key, tensors) in specs
+            _ensure_contraction_sequence!(sequences, seq_lock, key, tensors)
+        end
+    else
+        Threads.@threads for i in 1:n
+            key, tensors = specs[i]
+            _ensure_contraction_sequence!(sequences, seq_lock, key, tensors)
+        end
+    end
+    if !isempty(progress_label)
+        println("[$progress_label] pre-warmed $n contraction sequence(s)")
+        flush(stdout)
+    end
+    return n
+end
+
+function prewarm_message_contraction_sequences!(
+        cache::TNMPCache,
+        keys_to_update::Vector{Tuple{Any, NamedEdge}};
+        nthreads::Union{Nothing, Integer} = nothing,
+        progress_label::AbstractString = "",
+    )
+    specs = rank2_message_prewarm_specs(cache, keys_to_update)
+    label = isempty(progress_label) ? "prewarm" : "$(progress_label)/prewarm"
+    return prewarm_contraction_sequences!(
+        cache.contraction_sequences, cache.sequence_lock, specs;
+        nthreads = nthreads, progress_label = label,
+    )
 end
 
 function contract_all!(cache::TNMPCache, key, tensors::Vector{<:ITensor})
@@ -421,7 +591,41 @@ function message_difference(a::ITensor, b::ITensor)
     return max(0.0, 1 - fidelity)
 end
 
-function run_message_passing!(cache::TNMPCache; max_iter::Integer = 100, tol::Real = 1e-6)
+function log_message_passing_progress(;
+        progress_interval::Union{Nothing, Integer} = nothing,
+        progress_label::AbstractString = "",
+        iteration::Integer,
+        max_iter::Integer,
+        final_diff::Real,
+        n_keys::Integer,
+        converged::Bool = false,
+    )
+    progress_interval === nothing && return
+    progress_interval <= 0 && return
+    iteration == 1 || iteration % progress_interval == 0 || converged || return
+    prefix = isempty(progress_label) ? "" : "[$(progress_label)] "
+    suffix = converged ? " converged" : ""
+    println("$(prefix)iter $(iteration)/$(max_iter), diff=$(final_diff), keys=$(n_keys)$(suffix)")
+    flush(stdout)
+    return nothing
+end
+
+function _message_passing_step_rank2!(cache::TNMPCache, keys_to_update)
+    final_diff = 0.0
+    for (center_node, e) in keys_to_update
+        previous = cache.messages[(center_node, e)]
+        new_message = compute_message(cache, center_node, e)
+        cache.messages[(center_node, e)] = new_message
+        final_diff = max(final_diff, message_difference(new_message, previous))
+    end
+    return final_diff
+end
+
+function run_message_passing!(cache::TNMPCache; max_iter::Integer = 100, tol::Real = 1e-6,
+        progress_interval::Union{Nothing, Integer} = nothing,
+        progress_label::AbstractString = "",
+        nthreads::Union{Nothing, Integer} = nothing,
+    )
     psi = cache.network
     g = graph(psi)
     init_messages!(cache)
@@ -434,22 +638,31 @@ function run_message_passing!(cache::TNMPCache; max_iter::Integer = 100, tol::Re
         end
     end
 
+    nt = message_passing_nthreads(nthreads)
+    prewarm_message_contraction_sequences!(cache, keys_to_update;
+        nthreads = nt,
+        progress_label = progress_label,
+    )
+
     converged = false
     iterations = Int(max_iter)
     final_diff = Inf
     for it in 1:max_iter
-        final_diff = 0.0
-        for (center_node, e) in keys_to_update
-            previous = cache.messages[(center_node, e)]
-            new_message = compute_message(cache, center_node, e)
-            cache.messages[(center_node, e)] = new_message
-            final_diff = max(final_diff, message_difference(new_message, previous))
-        end
+        final_diff = _message_passing_step_rank2!(cache, keys_to_update)
         if final_diff <= tol
             converged = true
             iterations = it
+            log_message_passing_progress(;
+                progress_interval, progress_label,
+                iteration = it, max_iter, final_diff, n_keys = length(keys_to_update),
+                converged = true,
+            )
             break
         end
+        log_message_passing_progress(;
+            progress_interval, progress_label,
+            iteration = it, max_iter, final_diff, n_keys = length(keys_to_update),
+        )
     end
     return (; converged, iterations, final_diff)
 end
@@ -469,14 +682,47 @@ function marginal_tensors(cache::TNMPCache, target, state::Integer)
     return tensors
 end
 
-function tnmp_marginal(cache::TNMPCache, target)
+function rank2_marginal_prewarm_specs(cache::TNMPCache, target)
+    psi = cache.network
+    center_node = (:site, target)
+    region = cache.regions[center_node]
+    incoming = [
+        compute_message(cache, center_node, e)
+        for e in incoming_boundary_edges(graph(psi), region)
+    ]
+    d = dim(only(siteinds(psi, target)))
+    specs = Tuple{Any, Vector{ITensor}}[]
+    for state in 1:d
+        tensors = marginal_factors(psi, region, target, state)
+        append!(tensors, incoming)
+        push!(specs, ((:marginal, target, state), tensors))
+    end
+    return specs
+end
+
+function tnmp_marginal(cache::TNMPCache, target;
+        progress_interval::Union{Nothing, Integer} = nothing,
+        progress_label::AbstractString = "",
+        nthreads::Union{Nothing, Integer} = nothing,
+    )
     psi = cache.network
     center_node = (:site, target)
     region = cache.regions[center_node]
     incoming = [compute_message(cache, center_node, e) for e in incoming_boundary_edges(graph(psi), region)]
     d = dim(only(siteinds(psi, target)))
+
+    nt = message_passing_nthreads(nthreads)
+    prewarm_label = isempty(progress_label) ? "marginal/prewarm" : "$(progress_label)/prewarm"
+    prewarm_contraction_sequences!(
+        cache.contraction_sequences, cache.sequence_lock,
+        rank2_marginal_prewarm_specs(cache, target);
+        nthreads = nt, progress_label = prewarm_label,
+    )
+
     weights = Float64[]
     for state in 1:d
+        progress_interval !== nothing && progress_interval > 0 &&
+            (println("[$(progress_label)] contracting marginal state $(state)/$(d)"); flush(stdout))
         tensors = marginal_factors(psi, region, target, state)
         append!(tensors, incoming)
         push!(weights, scalar_weight!(cache, (:marginal, target, state), tensors))

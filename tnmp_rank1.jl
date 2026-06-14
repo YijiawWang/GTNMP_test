@@ -23,6 +23,7 @@ include("tnmp.jl")
 
 using ITensors: ITensor, dim, onehot, prime
 using NamedGraphs: NamedEdge, NamedGraph, src, dst, vertices
+using Random: AbstractRNG, MersenneTwister, rand
 import ITensors
 
 import .TNMPTest:
@@ -41,8 +42,14 @@ import .TNMPTest:
     normalize_weights,
     normalize_message,
     message_difference,
+    log_message_passing_progress,
+    message_passing_nthreads,
+    _ensure_contraction_sequence!,
+    prewarm_contraction_sequences!,
     # re-exported public helpers so a script only needs `using .TNMPRank1`
+    random_alpha_state,
     random_state,
+    random_uniform_complex_state,
     exact_marginal,
     graph,
     siteinds
@@ -55,7 +62,9 @@ export TNMPRank1Cache,
     incoming_boundary_edges,
     marginal_tensors,
     message_tensors,
+    random_alpha_state,
     random_state,
+    random_uniform_complex_state,
     exact_marginal,
     exact_marginal_single_layer,
     run_message_passing_single_layer!,
@@ -75,6 +84,14 @@ function default_message_vec(psi::TensorNetworkState, e::NamedEdge, layer::Symbo
     leg_inds = layer === :ket ? linds : prime.(linds)
     dims = ntuple(k -> dim(leg_inds[k]), length(leg_inds))
     return ITensor(ones(Float64, dims...), leg_inds...)
+end
+
+# Independent random rank-1 messages for ket and bra legs of the same edge.
+function random_message_vec(psi::TensorNetworkState, e::NamedEdge, layer::Symbol, rng::AbstractRNG)
+    linds = collect(virtualinds(psi, e))
+    leg_inds = layer === :ket ? linds : prime.(linds)
+    dims = ntuple(k -> dim(leg_inds[k]), length(leg_inds))
+    return ITensor(rand(rng, Float64, dims...), leg_inds...)
 end
 
 function scalar_weight_value(z::ITensor)
@@ -99,6 +116,7 @@ struct TNMPRank1Cache
     messages::Dict{Tuple{Any, NamedEdge, Symbol}, ITensor}
     contraction_sequences::Dict{Any, Any}
     normalize::Symbol
+    sequence_lock::ReentrantLock
 end
 
 # See `TNMPCache`: `region_fn(gp, g, node)` selects the neighborhood. Defaults
@@ -126,6 +144,7 @@ function TNMPRank1Cache(
         Dict{Tuple{Any, NamedEdge, Symbol}, ITensor}(),
         Dict{Any, Any}(),
         normalize,
+        ReentrantLock(),
     )
 end
 
@@ -134,11 +153,11 @@ normalize_msg(cache::TNMPRank1Cache, message::ITensor) = normalize_message(messa
 function contract_cached!(cache::TNMPRank1Cache, key, tensors::Vector{<:ITensor})
     isempty(tensors) && return ITensor(1.0)
     length(tensors) == 1 && return only(tensors)
-    if !haskey(cache.contraction_sequences, key)
-        cache.contraction_sequences[key] = contraction_sequence(tensors)
-    end
+    seq = _ensure_contraction_sequence!(
+        cache.contraction_sequences, cache.sequence_lock, key, tensors,
+    )
     ITensors.disable_warn_order()
-    return ITensors.contract(tensors; sequence = cache.contraction_sequences[key])
+    return ITensors.contract(tensors; sequence = seq)
 end
 
 function get_message(cache::TNMPRank1Cache, center_node, e::NamedEdge, layer::Symbol)
@@ -212,60 +231,140 @@ function message_keys(cache::TNMPRank1Cache, center_node)
     return ks
 end
 
-function init_messages!(cache::TNMPRank1Cache, keys_to_update)
+function init_messages!(cache::TNMPRank1Cache, keys_to_update; rng::AbstractRNG = MersenneTwister(0))
     psi = cache.network
     for (center_node, e, layer) in keys_to_update
         cache.messages[(center_node, e, layer)] =
-            normalize_msg(cache, default_message_vec(psi, e, layer))
+            normalize_msg(cache, random_message_vec(psi, e, layer, rng))
     end
     return cache
+end
+
+function rank1_message_prewarm_specs(
+        cache::TNMPRank1Cache,
+        keys_to_update::Vector{Tuple{Any, NamedEdge, Symbol}},
+    )
+    specs = Tuple{Any, Vector{ITensor}}[]
+    for (center_node, e, layer) in keys_to_update
+        tensors = message_tensors(cache, center_node, e, layer)
+        isempty(tensors) && continue
+        push!(specs, ((:message, center_node, e, layer), tensors))
+    end
+    return specs
+end
+
+function prewarm_message_contraction_sequences!(
+        cache::TNMPRank1Cache,
+        keys_to_update::Vector{Tuple{Any, NamedEdge, Symbol}};
+        nthreads::Union{Nothing, Integer} = nothing,
+        progress_label::AbstractString = "",
+    )
+    specs = rank1_message_prewarm_specs(cache, keys_to_update)
+    label = isempty(progress_label) ? "prewarm" : "$(progress_label)/prewarm"
+    return prewarm_contraction_sequences!(
+        cache.contraction_sequences, cache.sequence_lock, specs;
+        nthreads = nthreads, progress_label = label,
+    )
+end
+
+function _message_passing_step_rank1!(cache::TNMPRank1Cache, keys_to_update)
+    final_diff = 0.0
+    for (center_node, e, layer) in keys_to_update
+        previous = cache.messages[(center_node, e, layer)]
+        new_message = compute_message(cache, center_node, e, layer)
+        cache.messages[(center_node, e, layer)] = new_message
+        final_diff = max(final_diff, message_difference(new_message, previous))
+    end
+    return final_diff
+end
+
+function _message_passing_step_single_layer!(cache::TNMPRank1Cache, keys_to_update)
+    final_diff = 0.0
+    for (center_node, e) in keys_to_update
+        previous = cache.messages[(center_node, e, :ket)]
+        new_message = compute_message_single_layer(cache, center_node, e)
+        cache.messages[(center_node, e, :ket)] = new_message
+        final_diff = max(final_diff, message_difference(new_message, previous))
+    end
+    return final_diff
 end
 
 # Iterate a given set of message keys to a fixed point. Used both for the
 # global bond-region messages and (locally) for the site-region messages that
 # feed the marginal.
-function iterate_messages!(cache::TNMPRank1Cache, keys_to_update; max_iter::Integer, tol::Real)
+function iterate_messages!(cache::TNMPRank1Cache, keys_to_update; max_iter::Integer, tol::Real,
+        progress_interval::Union{Nothing, Integer} = nothing,
+        progress_label::AbstractString = "",
+        nthreads::Union{Nothing, Integer} = nothing,
+    )
+    nt = message_passing_nthreads(nthreads)
+    prewarm_message_contraction_sequences!(cache, keys_to_update;
+        nthreads = nt,
+        progress_label = progress_label,
+    )
     converged = false
     iterations = Int(max_iter)
     final_diff = Inf
     for it in 1:max_iter
-        final_diff = 0.0
-        for (center_node, e, layer) in keys_to_update
-            previous = cache.messages[(center_node, e, layer)]
-            new_message = compute_message(cache, center_node, e, layer)
-            cache.messages[(center_node, e, layer)] = new_message
-            final_diff = max(final_diff, message_difference(new_message, previous))
-        end
+        final_diff = _message_passing_step_rank1!(cache, keys_to_update)
         if final_diff <= tol
             converged = true
             iterations = it
+            log_message_passing_progress(;
+                progress_interval, progress_label,
+                iteration = it, max_iter, final_diff, n_keys = length(keys_to_update),
+                converged = true,
+            )
             break
         end
+        log_message_passing_progress(;
+            progress_interval, progress_label,
+            iteration = it, max_iter, final_diff, n_keys = length(keys_to_update),
+        )
     end
     return (; converged, iterations, final_diff)
 end
 
-function run_message_passing!(cache::TNMPRank1Cache; max_iter::Integer = 100, tol::Real = 1e-6)
+function run_message_passing!(cache::TNMPRank1Cache; max_iter::Integer = 100, tol::Real = 1e-6,
+        progress_interval::Union{Nothing, Integer} = nothing,
+        progress_label::AbstractString = "",
+        nthreads::Union{Nothing, Integer} = nothing,
+        message_init_rng::AbstractRNG = MersenneTwister(0),
+    )
     keys_to_update = Tuple{Any, NamedEdge, Symbol}[]
     for node in vertices(cache.gp)
         first(node) == :bond || continue
         append!(keys_to_update, message_keys(cache, node))
     end
-    init_messages!(cache, keys_to_update)
-    return iterate_messages!(cache, keys_to_update; max_iter = max_iter, tol = tol)
+    init_messages!(cache, keys_to_update; rng = message_init_rng)
+    return iterate_messages!(cache, keys_to_update;
+        max_iter = max_iter, tol = tol,
+        progress_interval = progress_interval, progress_label = progress_label,
+        nthreads = nthreads,
+    )
 end
 
 # ---------------------------------------------------------------------------
 # Marginal
 # ---------------------------------------------------------------------------
 
-function converge_center_messages!(cache::TNMPRank1Cache, center_node; max_iter::Integer, tol::Real)
+function converge_center_messages!(cache::TNMPRank1Cache, center_node; max_iter::Integer, tol::Real,
+        progress_interval::Union{Nothing, Integer} = nothing,
+        progress_label::AbstractString = "",
+        nthreads::Union{Nothing, Integer} = nothing,
+        message_init_rng::AbstractRNG = MersenneTwister(0),
+    )
     ks = message_keys(cache, center_node)
     for (cn, e, layer) in ks
         haskey(cache.messages, (cn, e, layer)) ||
-            (cache.messages[(cn, e, layer)] = normalize_msg(cache, default_message_vec(cache.network, e, layer)))
+            (cache.messages[(cn, e, layer)] =
+                normalize_msg(cache, random_message_vec(cache.network, e, layer, message_init_rng)))
     end
-    return iterate_messages!(cache, ks; max_iter = max_iter, tol = tol)
+    return iterate_messages!(cache, ks;
+        max_iter = max_iter, tol = tol,
+        progress_interval = progress_interval, progress_label = progress_label,
+        nthreads = nthreads,
+    )
 end
 
 # The tensors contracted to produce the (unnormalised) weight of `target` in
@@ -284,14 +383,27 @@ function marginal_tensors(cache::TNMPRank1Cache, target, state::Integer)
     return tensors
 end
 
-function tnmp_marginal(cache::TNMPRank1Cache, target; max_iter::Integer = 100, tol::Real = 1e-8)
+function tnmp_marginal(cache::TNMPRank1Cache, target; max_iter::Integer = 100, tol::Real = 1e-8,
+        progress_interval::Union{Nothing, Integer} = nothing,
+        progress_label::AbstractString = "",
+        nthreads::Union{Nothing, Integer} = nothing,
+        message_init_rng::AbstractRNG = MersenneTwister(0),
+    )
     psi = cache.network
     center_node = (:site, target)
-    converge_center_messages!(cache, center_node; max_iter = max_iter, tol = tol)
+    converge_center_messages!(cache, center_node;
+        max_iter = max_iter, tol = tol,
+        progress_interval = progress_interval,
+        progress_label = isempty(progress_label) ? "center-mp" : progress_label,
+        nthreads = nthreads,
+        message_init_rng = message_init_rng,
+    )
 
     d = dim(only(siteinds(psi, target)))
     weights = Float64[]
     for state in 1:d
+        progress_interval !== nothing && progress_interval > 0 &&
+            (println("[$(progress_label)] contracting marginal state $(state)/$(d)"); flush(stdout))
         z = contract_cached!(cache, (:marginal, target, state), marginal_tensors(cache, target, state))
         push!(weights, scalar_weight_value(z))
     end
@@ -353,18 +465,14 @@ function compute_message_single_layer(cache::TNMPRank1Cache, center_node, in_edg
     return normalize_msg(cache, contract_cached!(cache, key, tensors))
 end
 
-function iterate_messages_single_layer!(cache::TNMPRank1Cache, keys_to_update; max_iter::Integer, tol::Real)
+function iterate_messages_single_layer!(cache::TNMPRank1Cache, keys_to_update; max_iter::Integer, tol::Real,
+        nthreads::Union{Nothing, Integer} = nothing,
+    )
     converged = false
     iterations = Int(max_iter)
     final_diff = Inf
     for it in 1:max_iter
-        final_diff = 0.0
-        for (center_node, e) in keys_to_update
-            previous = cache.messages[(center_node, e, :ket)]
-            new_message = compute_message_single_layer(cache, center_node, e)
-            cache.messages[(center_node, e, :ket)] = new_message
-            final_diff = max(final_diff, message_difference(new_message, previous))
-        end
+        final_diff = _message_passing_step_single_layer!(cache, keys_to_update)
         if final_diff <= tol
             converged = true
             iterations = it
@@ -374,7 +482,9 @@ function iterate_messages_single_layer!(cache::TNMPRank1Cache, keys_to_update; m
     return (; converged, iterations, final_diff)
 end
 
-function run_message_passing_single_layer!(cache::TNMPRank1Cache; max_iter::Integer = 100, tol::Real = 1e-6)
+function run_message_passing_single_layer!(cache::TNMPRank1Cache; max_iter::Integer = 100, tol::Real = 1e-6,
+        nthreads::Union{Nothing, Integer} = nothing,
+    )
     g = graph(cache.network)
     keys_to_update = Tuple{Any, NamedEdge}[]
     for node in vertices(cache.gp)
@@ -387,7 +497,9 @@ function run_message_passing_single_layer!(cache::TNMPRank1Cache; max_iter::Inte
         cache.messages[(center_node, e, :ket)] =
             normalize_msg(cache, default_message_vec(cache.network, e, :ket))
     end
-    return iterate_messages_single_layer!(cache, keys_to_update; max_iter = max_iter, tol = tol)
+    return iterate_messages_single_layer!(cache, keys_to_update;
+        max_iter = max_iter, tol = tol, nthreads = nthreads,
+    )
 end
 
 function converge_center_messages_single_layer!(cache::TNMPRank1Cache, center_node; max_iter::Integer, tol::Real)

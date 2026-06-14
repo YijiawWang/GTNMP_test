@@ -1,6 +1,6 @@
 # TNMP Sub-Tensor Networks and Contraction Space Complexity
 
-![get cavity](get_cavity.png)
+![get cavity](figs/get_cavity.png)
 
 This document maps the TreeSA contraction-complexity results in [`contraction_sc_results.md`](contraction_sc_results.md) to the four schematic figures and the [`TNMP_test`](../../../TNMP_test) implementation. It explains how the **cavity** (message update) and **neighborhood** (marginal contraction) sub-TNs are built in the **rank-1** and **rank-2** settings.
 
@@ -29,12 +29,12 @@ For a square lattice with **L = 3** and the center in the interior (e.g. `(4, 4)
 
 Corresponding code:
 
-```384:385:TNMP_test/tnmp.jl
+```426:427:TNMP_test/tnmp.jl
 cavity_vertices(cache::TNMPCache, a_node, center_node) =
     setdiff(cache.regions[a_node], cache.regions[center_node])
 ```
 
-```150:151:TNMP_test/tnmp_rank1.jl
+```152:153:TNMP_test/tnmp_rank1.jl
 cavity_vertices(cache::TNMPRank1Cache, a_node, center_node) =
     setdiff(cache.regions[a_node], cache.regions[center_node])
 ```
@@ -61,7 +61,7 @@ Consistent with [`contraction_sc_results.md`](contraction_sc_results.md) and [`t
 
 ### 3.1 Rank-1 Cavity — message update (`message_tensors`)
 
-![rank1 cavity](rank1_cavity.png)
+![rank1 cavity](figs/rank1_cavity.png)
 
 **Meaning**: To compute the rank-1 message flowing from boundary bond `a` into center site `i`, contract the double-layer norm factors on the cavity and close every other boundary edge with separate ket/bra rank-1 vector messages. On the open edge, keep **one layer** open and close the opposite layer with its current message.
 
@@ -73,7 +73,7 @@ Consistent with [`contraction_sc_results.md`](contraction_sc_results.md) and [`t
 
 **Code construction** (`TNMPRank1.message_tensors`):
 
-```171:191:TNMP_test/tnmp_rank1.jl
+```173:193:TNMP_test/tnmp_rank1.jl
 function message_tensors(cache::TNMPRank1Cache, center_node, in_edge::NamedEdge, layer::Symbol)
     psi = cache.network
     g = graph(psi)
@@ -109,7 +109,7 @@ end
 
 ### 3.2 Rank-1 Neighborhood — marginal contraction (`marginal_tensors`)
 
-![rank1 neighborhood](rank1_neighborhood.png)
+![rank1 neighborhood](figs/rank1_neighborhood.png)
 
 **Meaning**: Fix the center site `target` physical leg to `state` and contract its 3×3 neighborhood; attach converged rank-1 messages on the ket and bra legs of every boundary edge.
 
@@ -121,7 +121,7 @@ end
 
 **Code construction**:
 
-```275:285:TNMP_test/tnmp_rank1.jl
+```277:287:TNMP_test/tnmp_rank1.jl
 function marginal_tensors(cache::TNMPRank1Cache, target, state::Integer)
     psi = cache.network
     center_node = (:site, target)
@@ -149,7 +149,7 @@ end
 
 ### 3.3 Rank-2 Cavity — message update (`message_tensors`)
 
-![rank2 cavity](rank2_cavity.png)
+![rank2 cavity](figs/rank2_cavity.png)
 
 **Meaning**: Same cavity vertex set as rank-1, but each boundary edge is closed by **one** rank-2 matrix message `δ(b, b')` or the converged `M` that couples ket and bra together. Only the cavity opening edge carries no message (red triangles in the figure).
 
@@ -161,7 +161,7 @@ end
 
 **Code construction**:
 
-```393:408:TNMP_test/tnmp.jl
+```435:450:TNMP_test/tnmp.jl
 function message_tensors(cache::TNMPCache, center_node, in_edge::NamedEdge)
     psi = cache.network
     g = graph(psi)
@@ -192,7 +192,7 @@ end
 
 ### 3.4 Rank-2 Neighborhood — marginal contraction (`marginal_tensors`)
 
-![rank2 neighborhood](rank2_neighborhood.png)
+![rank2 neighborhood](figs/rank2_neighborhood.png)
 
 **Meaning**: 3×3 neighborhood plus one rank-2 incoming message per boundary edge; center site fixed.
 
@@ -204,7 +204,7 @@ end
 
 **Code construction**:
 
-```461:470:TNMP_test/tnmp.jl
+```503:512:TNMP_test/tnmp.jl
 function marginal_tensors(cache::TNMPCache, target, state::Integer)
     psi = cache.network
     center_node = (:site, target)
@@ -232,10 +232,10 @@ end
 
 | Figure | TNMP step | Rank | `TNMP_test` entry point | Region size (L=3) | Schematic leaves / code ITensors |
 |--------|-----------|------|-------------------------|-------------------|----------------------------------|
-| `rank1_cavity.png` | Message update | 1 | `TNMPRank1.message_tensors` | cavity 3×1 | 22 / 22 |
-| `rank1_neighborhood.png` | Marginal | 1 | `TNMPRank1.marginal_tensors` | neighborhood 3×3 | 44 / 34 (18 factors + 16 messages) |
-| `rank2_cavity.png` | Message update | 2 | `TNMPTest.message_tensors` | cavity 3×1 | 15 / 15 |
-| `rank2_neighborhood.png` | Marginal | 2 | `TNMPTest.marginal_tensors` | neighborhood 3×3 | 32 / 26 (18 factors + 8 messages) |
+| `figs/rank1_cavity.png` | Message update | 1 | `TNMPRank1.message_tensors` | cavity 3×1 | 22 / 22 |
+| `figs/rank1_neighborhood.png` | Marginal | 1 | `TNMPRank1.marginal_tensors` | neighborhood 3×3 | 44 / 34 (18 factors + 16 messages) |
+| `figs/rank2_cavity.png` | Message update | 2 | `TNMPTest.message_tensors` | cavity 3×1 | 15 / 15 |
+| `figs/rank2_neighborhood.png` | Marginal | 2 | `TNMPTest.marginal_tensors` | neighborhood 3×3 | 32 / 26 (18 factors + 8 messages) |
 
 > The `tensors` column in [`contraction_sc_results.md`](contraction_sc_results.md) counts leaf tensors in the schematic eincode. The ITensor list from `TNMP_test` may differ in how boundary objects are counted (open legs vs boundary bonds), but **sc is aligned** at χ=8, L=3 by the unit tests.
 
