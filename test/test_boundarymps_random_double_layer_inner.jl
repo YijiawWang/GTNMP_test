@@ -3,30 +3,34 @@ include(joinpath(@__DIR__, "..", "examples", "boundarymps_random_double_layer.jl
 using .TNMPBoundaryMPSDemo
 using Test: @test, @testset
 
-@testset "Boundary MPS contracts random double-layer TN toward exact" begin
-    # A 4x4 grid gives 4 partitions (rows), so the boundary-MPS sweep actually
-    # exercises the iterative MPO x MPS apply/truncate path (with >2 partitions),
-    # unlike a 2-row grid where only a single MPO truncation runs.
-    result = TNMPBoundaryMPSDemo.boundarymps_convergence(
-        grid_dims = (4, 4),
+@testset "Boundary MPS production marginal sweep" begin
+    out = joinpath(mktempdir(), "test_boundarymps.jls")
+    cfg = TNMPBoundaryMPSDemo.BoundaryMPSConfig(
+        L = 4,
+        chi = 2,
         seed = 7,
-        physical_dim = 2,
-        bond_dim = 2,
-        mps_bond_dimensions = [1, 2, 4, 8, 16],
+        bmps_chi_max = 8,
+        bmps_epsilon = 1e-2,
+        output = out,
     )
 
-    errors = [entry.abs_error for entry in result.estimates]
-    scale = max(1, abs(result.exact))
+    payload = TNMPBoundaryMPSDemo.run_boundarymps_marginal(cfg)
 
-    @test isfinite(result.exact)
-    @test length(errors) == 5
-    # Error should not grow as the bond dimension increases (allow a tiny
-    # relative slack so that round-off near convergence can't cause flakiness).
-    for i in 2:length(errors)
-        @test errors[i] <= errors[i - 1] + 1e-8 * scale
+    @test payload["algorithm"] == "boundarymps"
+    @test isfile(out)
+
+    history = payload["history"]
+    @test !isempty(history)
+    @test history[1]["l1_delta_vs_prev"] == Inf
+
+    for entry in history
+        marginal = entry["marginal"]
+        @test all(isfinite, marginal)
+        @test sum(marginal) ≈ 1.0
     end
-    # The truncation must matter: the smallest bond dimension is far from exact.
-    @test errors[1] > 1e-3 * scale
-    # The largest bond dimension recovers the exact contraction.
-    @test errors[end] <= 1e-10 * scale
+
+    final_marginal = payload["final_marginal"]
+    @test all(isfinite, final_marginal)
+    @test sum(final_marginal) ≈ 1.0
+    @test payload["final_bmps_chi"] <= cfg.bmps_chi_max
 end

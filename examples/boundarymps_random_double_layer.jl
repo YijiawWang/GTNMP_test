@@ -1,92 +1,182 @@
+#!/usr/bin/env julia
+# Boundary-MPS centre-site marginal on a random double-layer PEPS.
+#
+# This example only handles the *instance* (random alpha PEPS) and *parameters*
+# (CLI flags / output). The boundary-MPS solver itself lives in
+# `TNMP_test/src/boundarymps.jl` (module `TNMPBoundaryMPS`).
+#
+# Self-contained example for TNMP_test. After installing TensorNetworkQuantumSimulator
+# locally, run:
+#
+#   julia --project=TNMP_test TNMP_test/examples/boundarymps_random_double_layer.jl
+#
+# Optional CLI flags:
+#   --L 10 --chi 8 --seed 7 --alpha 0.5
+#   --bmps-chi-max 64 --bmps-epsilon 1e-4 --bmps-partition-by row
+#   --output path/to/result.jls
+#
+# TensorNetworkQuantumSimulator is resolved by `src/boundarymps.jl` in this order:
+#   1. already installed in the active Julia environment
+#   2. ENV["TNQS_PROJECT"] if set
+#   3. sibling checkout at ../TensorNetworkQuantumSimulator_q.jl (monorepo layout)
+#
+# To install TNQS into this project:
+#   julia --project=TNMP_test -e 'using Pkg; Pkg.develop(path="path/to/TensorNetworkQuantumSimulator")'
+
 module TNMPBoundaryMPSDemo
 
-const _ROOT = normpath(joinpath(@__DIR__, ".."))
-const _TNQS_PROJECT = joinpath(_ROOT, "..", "TensorNetworkQuantumSimulator_q.jl")
-if !in(_TNQS_PROJECT, LOAD_PATH)
-    pushfirst!(LOAD_PATH, _TNQS_PROJECT)
-end
+export BoundaryMPSConfig,
+    parse_boundarymps_config,
+    run_boundarymps_marginal
 
-using Dictionaries: Dictionary
-using NamedGraphs: vertices
+const _ROOT = normpath(joinpath(@__DIR__, ".."))
+
+include(joinpath(_ROOT, "src", "boundarymps.jl"))
+using .TNMPBoundaryMPS
+
 using NamedGraphs.NamedGraphGenerators: named_grid
 using Random: MersenneTwister
-using TensorNetworkQuantumSimulator
+using Serialization: serialize
 
-include(joinpath(@__DIR__, "..", "src", "tnmp.jl"))
-
-function to_tnqs_double_layer_network(psi::TNMPTest.TensorNetworkState)
-    vs = collect(vertices(TNMPTest.graph(psi)))
-    tensors = Dictionary(vs, [reduce(*, TNMPTest.traced_norm_factors(psi, v)) for v in vs])
-    return TensorNetworkQuantumSimulator.TensorNetwork(tensors, TNMPTest.graph(psi))
+Base.@kwdef struct BoundaryMPSConfig
+    L::Int = 6
+    alpha::Float64 = 0.5
+    chi::Int = 4
+    seed::Int = 7
+    bmps_chi_max::Int = 32
+    bmps_epsilon::Float64 = 1e-4
+    bmps_partition_by::String = "row"
+    output::String = ""
 end
 
-function random_tnmp_state(;
-        grid_dims = (2, 3),
-        seed::Integer = 7,
-        physical_dim::Integer = 2,
-        bond_dim::Integer = 2,
-        element_type::Type = Float64,
-    )
-    rng = MersenneTwister(seed)
-    graph = named_grid(grid_dims)
-    return TNMPTest.random_state(rng, graph; physical_dim, bond_dim, element_type)
+function grid_center(L::Integer)
+    c = (L + 1) ÷ 2
+    return (c, c)
 end
 
-function exact_double_layer_contraction(psi::TNMPTest.TensorNetworkState)
-    vs = collect(vertices(TNMPTest.graph(psi)))
-    # Raw (signed/complex) contraction of the double-layer network, so it can be
-    # compared directly against the boundary-MPS estimate. The double layer of a
-    # state is the norm ⟨ψ|ψ⟩ and is real, but we deliberately avoid
-    # `scalar_weight`'s abs/sign-flip so the comparison stays correct even when
-    # the network is not a norm.
-    return TNMPTest.contract_all(TNMPTest.norm_factors(psi, vs))[]
-end
-
-function boundarymps_convergence(;
-        grid_dims = (2, 3),
-        seed::Integer = 7,
-        physical_dim::Integer = 2,
-        bond_dim::Integer = 2,
-        element_type::Type = Float64,
-        mps_bond_dimensions = [1, 2, 4],
-        partition_by = "row",
-        bmps_update_kwargs = (;),
-    )
-    tnmp_state = random_tnmp_state(; grid_dims, seed, physical_dim, bond_dim, element_type)
-    double_layer = to_tnqs_double_layer_network(tnmp_state)
-    exact = exact_double_layer_contraction(tnmp_state)
-    estimates = map(mps_bond_dimensions) do chi
-        # Build the boundary-MPS cache directly so `partition_by` is honoured;
-        # `contract(...; alg = "boundarymps")` does not expose it.
-        cache = TensorNetworkQuantumSimulator.BoundaryMPSCache(
-            double_layer, chi; partition_by,
-        )
-        value = TensorNetworkQuantumSimulator.partitionfunction(
-            TensorNetworkQuantumSimulator.update(cache; bmps_update_kwargs...),
-        )
-        abs_error = abs(value - exact)
-        rel_error = abs_error / max(1, abs(exact))
-        return (; mps_bond_dimension = chi, value, abs_error, rel_error)
+function parse_int_option(args::Vector{String}, key::AbstractString, default::Integer)
+    flag = "--$key"
+    for i in eachindex(args)
+        args[i] == flag && return parse(Int, args[i + 1])
+        startswith(args[i], "$flag=") && return parse(Int, args[i][(length(flag) + 2):end])
     end
-    return (; exact, estimates)
+    return default
 end
 
-function main()
-    result = boundarymps_convergence()
-    println("exact = $(result.exact)")
-    for entry in result.estimates
+function parse_float_option(args::Vector{String}, key::AbstractString, default::Float64)
+    flag = "--$key"
+    for i in eachindex(args)
+        args[i] == flag && return parse(Float64, args[i + 1])
+        startswith(args[i], "$flag=") && return parse(Float64, args[i][(length(flag) + 2):end])
+    end
+    return default
+end
+
+function parse_string_option(args::Vector{String}, key::AbstractString, default::AbstractString)
+    flag = "--$key"
+    for i in eachindex(args)
+        args[i] == flag && return args[i + 1]
+        startswith(args[i], "$flag=") && return args[i][(length(flag) + 2):end]
+    end
+    return default
+end
+
+function parse_boundarymps_config(args::Vector{String} = ARGS)
+    return BoundaryMPSConfig(
+        L = parse_int_option(args, "L", 6),
+        alpha = parse_float_option(args, "alpha", 0.5),
+        chi = parse_int_option(args, "chi", 4),
+        seed = parse_int_option(args, "seed", 7),
+        bmps_chi_max = parse_int_option(args, "bmps-chi-max", 32),
+        bmps_epsilon = parse_float_option(args, "bmps-epsilon", 1e-4),
+        bmps_partition_by = parse_string_option(args, "bmps-partition-by", "row"),
+        output = parse_string_option(args, "output", ""),
+    )
+end
+
+function default_output_path(cfg::BoundaryMPSConfig)
+    tag = "L$(cfg.L)_alpha$(cfg.alpha)_chi$(cfg.chi)_seed$(cfg.seed)_boundarymps.jls"
+    return joinpath(_ROOT, "results", tag)
+end
+
+function save_result(path::AbstractString, payload)
+    mkpath(dirname(path))
+    tmp = path * ".tmp"
+    open(tmp, "w") do io
+        serialize(io, payload)
+    end
+    mv(tmp, path; force = true)
+    println("saved result -> $path")
+    flush(stdout)
+    return path
+end
+
+function run_boundarymps_marginal(cfg::BoundaryMPSConfig = BoundaryMPSConfig())
+    rng = MersenneTwister(cfg.seed)
+    g = named_grid((cfg.L, cfg.L))
+    center = grid_center(cfg.L)
+
+    println("sampling random alpha PEPS: L=$(cfg.L), chi=$(cfg.chi), alpha=$(cfg.alpha), center=$center")
+    psi = TNMPTest.random_alpha_state(
+        rng, g;
+        alpha = cfg.alpha,
+        physical_dim = 2,
+        bond_dim = cfg.chi,
+    )
+
+    println("sweeping boundary-MPS bond dimension up to $(cfg.bmps_chi_max) (epsilon=$(cfg.bmps_epsilon))")
+    result = sweep_boundarymps_marginal(
+        psi, center;
+        chi_max = cfg.bmps_chi_max,
+        epsilon = cfg.bmps_epsilon,
+        partition_by = cfg.bmps_partition_by,
+    )
+
+    payload = Dict(
+        "algorithm" => "boundarymps",
+        "L" => cfg.L,
+        "alpha" => cfg.alpha,
+        "chi" => cfg.chi,
+        "seed" => cfg.seed,
+        "center" => collect(center),
+        "bmps_chi_max" => cfg.bmps_chi_max,
+        "bmps_epsilon" => cfg.bmps_epsilon,
+        "bmps_partition_by" => cfg.bmps_partition_by,
+        "converged_bmps_chi" => result.converged_bmps_chi,
+        "final_bmps_chi" => result.final_bmps_chi,
+        "final_marginal" => result.final_marginal,
+        "history" => [
+            Dict(
+                "bmps_chi" => entry.bmps_chi,
+                "marginal" => entry.marginal,
+                "l1_delta_vs_prev" => entry.l1_delta_vs_prev,
+            )
+            for entry in result.history
+        ],
+    )
+
+    out = isempty(cfg.output) ? default_output_path(cfg) : cfg.output
+    save_result(out, payload)
+
+    println("algorithm = boundarymps")
+    println("center = $center")
+    println("converged_bmps_chi = $(result.converged_bmps_chi)")
+    for entry in result.history
         println(
-            "mps_bond_dimension = $(entry.mps_bond_dimension), " *
-            "boundarymps = $(entry.value), " *
-            "abs_error = $(entry.abs_error), " *
-            "rel_error = $(entry.rel_error)",
+            "bmps_chi = $(entry.bmps_chi), " *
+            "marginal = $(entry.marginal), " *
+            "l1_delta_vs_prev = $(entry.l1_delta_vs_prev)",
         )
     end
-    return result
+    return payload
 end
+
+function main(args::Vector{String} = ARGS)
+    return run_boundarymps_marginal(parse_boundarymps_config(args))
+end
+
+end # module
 
 if abspath(PROGRAM_FILE) == abspath(@__FILE__)
-    main()
-end
-
+    TNMPBoundaryMPSDemo.main()
 end
