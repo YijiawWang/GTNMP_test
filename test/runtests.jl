@@ -1,5 +1,5 @@
-include(joinpath(@__DIR__, "..", "tnmp.jl"))
-include(joinpath(@__DIR__, "..", "tnmp_rank1.jl"))
+include(joinpath(@__DIR__, "..", "src", "tnmp.jl"))
+include(joinpath(@__DIR__, "..", "src", "tnmp_rank1.jl"))
 
 using .TNMPTest
 using NamedGraphs: NamedGraph, add_edge!, vertices
@@ -59,3 +59,4 @@ include("test_contraction_sc.jl")
 include("test_first_order_tree.jl")
 include("test_boundarymps_log_normalization.jl")
 include("test_boundarymps_random_double_layer.jl")
+include("test_real_double_layer.jl")

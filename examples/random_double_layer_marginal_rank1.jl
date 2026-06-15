@@ -1,4 +1,4 @@
-include("tnmp_rank1.jl")
+include(joinpath(@__DIR__, "..", "src", "tnmp_rank1.jl"))
 
 using .TNMPRank1
 using NamedGraphs.NamedGraphGenerators: named_grid

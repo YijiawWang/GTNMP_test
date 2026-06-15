@@ -1,7 +1,7 @@
 module TNMPBoundaryMPSDemo
 
 const _ROOT = normpath(joinpath(@__DIR__, ".."))
-const _TNQS_PROJECT = joinpath(_ROOT, "TensorNetworkQuantumSimulator_q.jl")
+const _TNQS_PROJECT = joinpath(_ROOT, "..", "TensorNetworkQuantumSimulator_q.jl")
 if !in(_TNQS_PROJECT, LOAD_PATH)
     pushfirst!(LOAD_PATH, _TNQS_PROJECT)
 end
@@ -12,7 +12,7 @@ using NamedGraphs.NamedGraphGenerators: named_grid
 using Random: MersenneTwister
 using TensorNetworkQuantumSimulator
 
-include("tnmp.jl")
+include(joinpath(@__DIR__, "..", "src", "tnmp.jl"))
 
 function to_tnqs_double_layer_network(psi::TNMPTest.TensorNetworkState)
     vs = collect(vertices(TNMPTest.graph(psi)))

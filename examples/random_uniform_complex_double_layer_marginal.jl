@@ -4,9 +4,9 @@
 #   JL_INIT_MODE=uniform_complex JULIA_NUM_THREADS=64 scripts/run_all_marginals.sh
 #
 # Quick local smoke test:
-#   julia --project=TNMP_test TNMP_test/random_uniform_complex_double_layer_marginal.jl
+#   julia --project=TNMP_test TNMP_test/examples/random_uniform_complex_double_layer_marginal.jl
 
-include("tnmp.jl")
+include(joinpath(@__DIR__, "..", "src", "tnmp.jl"))
 
 using .TNMPTest
 using NamedGraphs.NamedGraphGenerators: named_grid

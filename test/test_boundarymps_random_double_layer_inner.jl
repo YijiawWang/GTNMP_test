@@ -1,4 +1,4 @@
-include(joinpath(@__DIR__, "..", "boundarymps_random_double_layer.jl"))
+include(joinpath(@__DIR__, "..", "examples", "boundarymps_random_double_layer.jl"))
 
 using .TNMPBoundaryMPSDemo
 using Test: @test, @testset

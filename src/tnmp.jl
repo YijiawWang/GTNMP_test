@@ -188,7 +188,7 @@ function random_alpha_state(
     return TensorNetworkState(tensors, Dict(v => Index[sitedict[v]] for v in vs), g)
 end
 
-include(joinpath(@__DIR__, "..", "scripts", "frustrated_copy_peps.jl"))
+include(joinpath(@__DIR__, "..", "..", "scripts", "frustrated_copy_peps.jl"))
 
 function frustrated_copy_noise_state(
         rng::AbstractRNG,
