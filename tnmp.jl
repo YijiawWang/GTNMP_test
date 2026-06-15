@@ -37,6 +37,7 @@ export TNMPCache,
     random_alpha_state,
     random_state,
     random_uniform_complex_state,
+    frustrated_copy_noise_state,
     run_message_passing!,
     siteinds,
     tnmp_marginal
@@ -185,6 +186,24 @@ function random_alpha_state(
     end
 
     return TensorNetworkState(tensors, Dict(v => Index[sitedict[v]] for v in vs), g)
+end
+
+include(joinpath(@__DIR__, "..", "scripts", "frustrated_copy_peps.jl"))
+
+function frustrated_copy_noise_state(
+        rng::AbstractRNG,
+        g::NamedGraph;
+        eps::Real,
+        physical_dim::Integer = 2,
+        bond_dim::Integer = 8,
+    )
+    tensors, siteinds_dict = build_frustrated_copy_noise_tensors(
+        rng, g;
+        eps = eps,
+        physical_dim = physical_dim,
+        bond_dim = bond_dim,
+    )
+    return TensorNetworkState(tensors, siteinds_dict, g)
 end
 
 virtualinds(psi::TensorNetworkState, e::NamedEdge) = commoninds(psi[src(e)], psi[dst(e)])
