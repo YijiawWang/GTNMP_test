@@ -32,6 +32,15 @@ function edge!(nb::NetBuilder, u, v, d::Int)
     return e
 end
 
+function open_leg!(nb::NetBuilder, node, d::Int)
+    nb.nedge += 1
+    e = nb.nedge
+    nb.dims[e] = d
+    push!(node!(nb, node), e)
+    return e
+end
+
+# Rank-1 incoming message leaf (blue triangle in figures).
 function caps!(nb::NetBuilder, c, k::Int, d::Int)
     for _ in 1:k
         nb.ntri += 1
@@ -42,7 +51,12 @@ end
 function eincode(nb::NetBuilder)
     nodes = collect(keys(nb.node_inds))
     ixs = [nb.node_inds[n] for n in nodes]
-    return EinCode(ixs, Int[]), nb.dims, length(nodes)
+    counts = Dict{Int, Int}()
+    for ix in ixs, l in ix
+        counts[l] = get(counts, l, 0) + 1
+    end
+    iy = sort([l for (l, c) in counts if c == 1])
+    return EinCode(ixs, iy), nb.dims, length(nodes)
 end
 
 function max_input_log2(ec::EinCode, dims::Dict{Int, Int})
@@ -70,8 +84,8 @@ function add_lattice_core!(nb::NetBuilder, n::Int, dim_chi::Int, dim_green::Int;
     end
     for y in 0:(n - 1), x in 0:(n - 1)
         if break_center && x == cx && y == cy
-            caps!(nb, T(x, y), 1, dim_chi)
-            caps!(nb, B(x, y), 1, dim_chi)
+            open_leg!(nb, T(x, y), dim_chi)
+            open_leg!(nb, B(x, y), dim_chi)
         else
             edge!(nb, T(x, y), B(x, y), dim_green)
         end
@@ -107,38 +121,38 @@ function merged_side!(nb::NetBuilder, n::Int, direction::Symbol, dim_chi::Int)
     return t
 end
 
-function split_side!(nb::NetBuilder, n::Int, direction::Symbol, dim_chi::Int)
+function open_side!(nb::NetBuilder, n::Int, direction::Symbol, dim_chi::Int)
     if direction === :xm
         for y in 0:(n - 1)
-            caps!(nb, (:T, 0, y), 1, dim_chi)
-            caps!(nb, (:B, 0, y), 1, dim_chi)
+            open_leg!(nb, (:T, 0, y), dim_chi)
+            open_leg!(nb, (:B, 0, y), dim_chi)
         end
     elseif direction === :xp
         for y in 0:(n - 1)
-            caps!(nb, (:T, n - 1, y), 1, dim_chi)
-            caps!(nb, (:B, n - 1, y), 1, dim_chi)
+            open_leg!(nb, (:T, n - 1, y), dim_chi)
+            open_leg!(nb, (:B, n - 1, y), dim_chi)
         end
     elseif direction === :yp
         for x in 0:(n - 1)
-            caps!(nb, (:T, x, n - 1), 1, dim_chi)
-            caps!(nb, (:B, x, n - 1), 1, dim_chi)
+            open_leg!(nb, (:T, x, n - 1), dim_chi)
+            open_leg!(nb, (:B, x, n - 1), dim_chi)
         end
     elseif direction === :ym
         for x in 0:(n - 1)
-            caps!(nb, (:T, x, 0), 1, dim_chi)
-            caps!(nb, (:B, x, 0), 1, dim_chi)
+            open_leg!(nb, (:T, x, 0), dim_chi)
+            open_leg!(nb, (:B, x, 0), dim_chi)
         end
     else
         error("unknown direction $direction")
     end
 end
 
-# GBP message-update cavity: one open face (x-) with split rank-1 legs; the
-# other three faces carry one merged rank-(2n) boundary tensor each.
+# GBP message-update cavity: one open face (x−); red triangles = open external legs
+# on T/B (not tensors).  Other three faces carry one merged rank-(2n) message each.
 function build_gbp_cavity(n::Int, dim_chi::Int; dim_green::Int = DIM_GREEN)
     nb = NetBuilder()
     add_lattice_core!(nb, n, dim_chi, dim_green; break_center = false)
-    split_side!(nb, n, :xm, dim_chi)
+    open_side!(nb, n, :xm, dim_chi)
     for dir in (:xp, :yp, :ym)
         merged_side!(nb, n, dir, dim_chi)
     end
@@ -146,7 +160,7 @@ function build_gbp_cavity(n::Int, dim_chi::Int; dim_green::Int = DIM_GREEN)
 end
 
 # GBP marginal neighborhood: all four faces grouped; center inter-layer bond
-# broken into two black caps (marginal target legs).
+# broken into open external legs on T/B (▲/▼ in figure, not tensors).
 function build_gbp_neighborhood(n::Int, dim_chi::Int; dim_green::Int = DIM_GREEN)
     nb = NetBuilder()
     add_lattice_core!(nb, n, dim_chi, dim_green; break_center = true)
@@ -158,15 +172,8 @@ end
 
 function leaf_count(name::String, n::Int)
     site_tensors = 2 * n * n
-    if name == "gbp_cavity"
-        open_caps = 2 * n
-        merged = 3
-        return site_tensors + open_caps + merged
-    else
-        center_caps = 2
-        merged = 4
-        return site_tensors + center_caps + merged
-    end
+    merged = name == "gbp_cavity" ? 3 : 4
+    return site_tensors + merged
 end
 
 function report(name::String, nb::NetBuilder; opt = TreeSA(; ntrials = 20, niters = 60, βs = 1.0:1.0:18.0))
@@ -191,8 +198,8 @@ function main()
 
     println("=== GBP sub-TN contraction complexity (TreeSA) ===")
     println("green bond = dim $DIM_GREEN, black bond = dim χ")
-    println("cavity: open x- face (split rank-1), other faces merged")
-    println("neighborhood: all four faces merged, center ▲/▼ caps\n")
+    println("cavity: open x− face (external legs on T/B, rank-2n result)")
+    println("neighborhood: all four faces merged; center ▲/▼ = open external legs\n")
 
     results = Dict{String, Vector{NamedTuple}}()
     for n in grid_sizes, chi in chi_values
@@ -224,8 +231,8 @@ function main()
         println(io, "## Conventions\n")
         println(io, "- **Green bond** (inter-layer physical leg): dim = 2")
         println(io, "- **Black bond** (virtual bond χ): dim ∈ {8, 16, 32}")
-        println(io, "- **Cavity** (`gbp_cavity.png`): n×n×2 lattice; x− face open with split rank-1 caps; centre inter-layer bond intact (green, dim 2); other three faces one merged boundary tensor each")
-        println(io, "- **Neighborhood** (`gbp_neighborhood.png`): n×n×2 lattice; four grouped face messages; center inter-layer bond → ▲/▼ caps (dim χ)")
+        println(io, "- **Cavity** (`gbp_cavity.png`): n×n×2 lattice; x− face open (red triangles = external legs on T/B, not tensors); centre inter-layer bond intact (green, dim 2); other three faces one merged boundary tensor each")
+        println(io, "- **Neighborhood** (`gbp_neighborhood.png`): n×n×2 lattice; four grouped face messages; center inter-layer bond → open external legs on T/B (▲/▼, not tensors)")
         println(io, "- **sc** = log₂(largest intermediate tensor elements)")
         println(io, "- **tc** = log₂(total contraction FLOPs)")
         println(io, "- Optimizer: TreeSA (`ntrials=20`, `niters=60`, `βs=1:1:18`)\n")
@@ -271,4 +278,6 @@ function main()
     println("\nWrote $md_path")
 end
 
-main()
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end

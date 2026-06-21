@@ -37,6 +37,11 @@ export TNMPCache,
     random_alpha_state,
     random_state,
     random_uniform_complex_state,
+    weak_entangled_biased_circuit_state,
+    tfim_imaginary_time_state,
+    spin_glass_pair_factor_state,
+    fully_frustrated_square_couplings,
+    fully_frustrated_pair_factor_state,
     frustrated_copy_noise_state,
     run_message_passing!,
     siteinds,
@@ -189,6 +194,7 @@ function random_alpha_state(
 end
 
 include(joinpath(@__DIR__, "..", "..", "scripts", "frustrated_copy_peps.jl"))
+include(joinpath(@__DIR__, "..", "..", "scripts", "perturbed_product_peps.jl"))
 
 function frustrated_copy_noise_state(
         rng::AbstractRNG,
@@ -202,6 +208,90 @@ function frustrated_copy_noise_state(
         eps = eps,
         physical_dim = physical_dim,
         bond_dim = bond_dim,
+    )
+    return TensorNetworkState(tensors, siteinds_dict, g)
+end
+
+function weak_entangled_biased_circuit_state(
+        rng::AbstractRNG,
+        g::NamedGraph;
+        theta::Real = 0.4,
+        phi::Real = 0.15,
+        depth::Integer = 2,
+        physical_dim::Integer = 2,
+        bond_dim::Integer = 4,
+    )
+    tensors, siteinds_dict = weak_entangled_biased_circuit_tensors(
+        rng,
+        g;
+        theta,
+        phi,
+        depth,
+        physical_dim,
+        bond_dim,
+    )
+    return TensorNetworkState(tensors, siteinds_dict, g)
+end
+
+function tfim_imaginary_time_state(
+        rng::AbstractRNG,
+        g::NamedGraph;
+        tau::Real = 0.05,
+        coupling_j::Real = 1.0,
+        field_h::Real = 0.8,
+        steps::Integer = 5,
+        physical_dim::Integer = 2,
+        bond_dim::Integer = 4,
+    )
+    tensors, siteinds_dict = tfim_imaginary_time_tensors(
+        rng,
+        g;
+        tau,
+        coupling_j,
+        field_h,
+        steps,
+        physical_dim,
+        bond_dim,
+    )
+    return TensorNetworkState(tensors, siteinds_dict, g)
+end
+
+function spin_glass_pair_factor_state(
+        rng::AbstractRNG,
+        g::NamedGraph;
+        beta::Real = 0.8,
+        bias::Real = 0.2,
+        disorder_seed::Integer = 7,
+        physical_dim::Integer = 2,
+        bond_dim::Integer = 4,
+    )
+    tensors, siteinds_dict = spin_glass_pair_factor_tensors(
+        rng,
+        g;
+        beta,
+        bias,
+        disorder_seed,
+        physical_dim,
+        bond_dim,
+    )
+    return TensorNetworkState(tensors, siteinds_dict, g)
+end
+
+function fully_frustrated_pair_factor_state(
+        rng::AbstractRNG,
+        g::NamedGraph;
+        K::Real = 1.0,
+        field::Real = 0.2,
+        physical_dim::Integer = 2,
+        bond_dim::Integer = 4,
+    )
+    tensors, siteinds_dict = fully_frustrated_pair_factor_tensors(
+        rng,
+        g;
+        K,
+        field,
+        physical_dim,
+        bond_dim,
     )
     return TensorNetworkState(tensors, siteinds_dict, g)
 end

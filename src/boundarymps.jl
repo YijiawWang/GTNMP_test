@@ -114,13 +114,17 @@ end
 function sweep_boundarymps_marginal(
         psi::TNMPTest.TensorNetworkState,
         center;
+        chi_min::Integer = 1,
         chi_max::Integer,
         epsilon::Real,
         partition_by::AbstractString = "row",
         bmps_update_kwargs = (;),
     )
     history = NamedTuple[]
-    chi = 1
+    chi_min > 0 || throw(ArgumentError("chi_min must be positive, got $chi_min"))
+    chi_max >= chi_min ||
+        throw(ArgumentError("chi_max must be >= chi_min, got chi_min=$chi_min chi_max=$chi_max"))
+    chi = chi_min
     prev_marg = nothing
     converged_at = nothing
 

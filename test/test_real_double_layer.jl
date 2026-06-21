@@ -2,10 +2,11 @@
 using Random
 using Test
 using NamedGraphs.NamedGraphGenerators: named_grid
-using ITensors: dag, prime, norm
+using ITensors: ITensor, Index
 
 include(joinpath(@__DIR__, "..", "..", "real_double_layer", "independent_double_layer.jl"))
 using .IndependentDoubleLayer
+using .IndependentDoubleLayer.TNMPTest: TensorNetworkState
 
 @testset "RealDoubleLayer independent sampling" begin
     rng1 = MersenneTwister(7)
@@ -28,6 +29,30 @@ end
     @test length(p) == 2
     @test abs(sum(p) - 1) < 1e-10
     @test all(p .>= 0)
+end
+
+@testset "RealDoubleLayer complex projection weights use L1 magnitude" begin
+    g = named_grid((1, 1))
+    v = (1, 1)
+    ket_s = Index(2, "ket-phys")
+    bra_s = Index(2, "bra-phys")
+
+    ket_t = ITensor(ComplexF64, ket_s)
+    ket_t[ket_s => 1] = 1 + 1im
+    ket_t[ket_s => 2] = 2 + 0im
+
+    bra_t = ITensor(ComplexF64, bra_s)
+    bra_t[bra_s => 1] = 0 + 1im
+    bra_t[bra_s => 2] = 1 + 0im
+
+    rdl = RealDoubleLayerState(
+        TensorNetworkState(Dict(v => ket_t), Dict(v => Index[ket_s]), g),
+        TensorNetworkState(Dict(v => bra_t), Dict(v => Index[bra_s]), g),
+    )
+
+    expected_weights = [abs(1 - 1im), abs(2 + 0im)]
+    expected = expected_weights ./ sum(expected_weights)
+    @test exact_marginal(rdl, v) ≈ expected
 end
 
 end

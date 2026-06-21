@@ -34,3 +34,21 @@ using Test: @test, @testset
     @test sum(final_marginal) ≈ 1.0
     @test payload["final_bmps_chi"] <= cfg.bmps_chi_max
 end
+
+@testset "Boundary MPS sweep can start at bmps_chi=2" begin
+    out = joinpath(mktempdir(), "test_boundarymps_chi2.jls")
+    cfg = TNMPBoundaryMPSDemo.BoundaryMPSConfig(
+        L = 4,
+        chi = 2,
+        seed = 7,
+        bmps_chi_min = 2,
+        bmps_chi_max = 2,
+        bmps_epsilon = 1e-2,
+        output = out,
+    )
+
+    payload = TNMPBoundaryMPSDemo.run_boundarymps_marginal(cfg)
+
+    @test payload["history"][1]["bmps_chi"] == 2
+    @test payload["final_bmps_chi"] == 2
+end

@@ -12,7 +12,7 @@
 #
 # Optional CLI flags:
 #   --L 10 --chi 8 --seed 7 --alpha 0.5
-#   --bmps-chi-max 64 --bmps-epsilon 1e-4 --bmps-partition-by row
+#   --bmps-chi-min 2 --bmps-chi-max 64 --bmps-epsilon 1e-4 --bmps-partition-by row
 #   --output path/to/result.jls
 #
 # TensorNetworkQuantumSimulator is resolved by `src/boundarymps.jl` in this order:
@@ -43,6 +43,7 @@ Base.@kwdef struct BoundaryMPSConfig
     alpha::Float64 = 0.5
     chi::Int = 4
     seed::Int = 7
+    bmps_chi_min::Int = 1
     bmps_chi_max::Int = 32
     bmps_epsilon::Float64 = 1e-4
     bmps_partition_by::String = "row"
@@ -87,6 +88,7 @@ function parse_boundarymps_config(args::Vector{String} = ARGS)
         alpha = parse_float_option(args, "alpha", 0.5),
         chi = parse_int_option(args, "chi", 4),
         seed = parse_int_option(args, "seed", 7),
+        bmps_chi_min = parse_int_option(args, "bmps-chi-min", 1),
         bmps_chi_max = parse_int_option(args, "bmps-chi-max", 32),
         bmps_epsilon = parse_float_option(args, "bmps-epsilon", 1e-4),
         bmps_partition_by = parse_string_option(args, "bmps-partition-by", "row"),
@@ -127,6 +129,7 @@ function run_boundarymps_marginal(cfg::BoundaryMPSConfig = BoundaryMPSConfig())
     println("sweeping boundary-MPS bond dimension up to $(cfg.bmps_chi_max) (epsilon=$(cfg.bmps_epsilon))")
     result = sweep_boundarymps_marginal(
         psi, center;
+        chi_min = cfg.bmps_chi_min,
         chi_max = cfg.bmps_chi_max,
         epsilon = cfg.bmps_epsilon,
         partition_by = cfg.bmps_partition_by,
@@ -139,6 +142,7 @@ function run_boundarymps_marginal(cfg::BoundaryMPSConfig = BoundaryMPSConfig())
         "chi" => cfg.chi,
         "seed" => cfg.seed,
         "center" => collect(center),
+        "bmps_chi_min" => cfg.bmps_chi_min,
         "bmps_chi_max" => cfg.bmps_chi_max,
         "bmps_epsilon" => cfg.bmps_epsilon,
         "bmps_partition_by" => cfg.bmps_partition_by,

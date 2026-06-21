@@ -6,7 +6,8 @@
 # figures span both circles). The contraction is L-independent: only the virtual
 # bond dimension χ matters.
 #   - bp_cavity (message i→j):   green inter-layer bond intact; 1 open output
-#     edge (split rank-1 red caps, one per layer) + 3 incoming rank-2 messages.
+#     edge (red triangles = open external legs on T and B, not tensors) +
+#     3 incoming rank-2 messages.  Contraction yields a rank-2 tensor (χ×χ).
 #   - bp_neighborhood (marginal i): green inter-layer bond intact;
 #     4 incoming rank-2 messages.
 # Conventions match gbp_contraction_sc.jl.
@@ -39,17 +40,24 @@ function edge!(nb::NetBuilder, u, v, d::Int)
     return e
 end
 
-function caps!(nb::NetBuilder, c, k::Int, d::Int)
-    for _ in 1:k
-        nb.ntri += 1
-        edge!(nb, c, (:tri, nb.ntri), d)
-    end
+# Open external leg on `node` (appears once in the network → output index).
+function open_leg!(nb::NetBuilder, node, d::Int)
+    nb.nedge += 1
+    e = nb.nedge
+    nb.dims[e] = d
+    push!(node!(nb, node), e)
+    return e
 end
 
 function eincode(nb::NetBuilder)
     nodes = collect(keys(nb.node_inds))
     ixs = [nb.node_inds[n] for n in nodes]
-    return EinCode(ixs, Int[]), nb.dims, length(nodes)
+    counts = Dict{Int, Int}()
+    for ix in ixs, l in ix
+        counts[l] = get(counts, l, 0) + 1
+    end
+    iy = sort([l for (l, c) in counts if c == 1])
+    return EinCode(ixs, iy), nb.dims, length(nodes)
 end
 
 max_input_log2(ec::EinCode, dims::Dict{Int, Int}) =
@@ -66,15 +74,15 @@ function rank2_msg!(nb::NetBuilder, T, B, dim_chi::Int)
 end
 
 # BP message update i→j: single ket/bra site, green bond intact, one open output
-# edge (split rank-1 caps, one per layer) and 3 incoming rank-2 messages.
-# Interior degree-4 site → 4 in-plane legs per layer.
+# edge (external legs on T and B — red triangles in the figure, not tensors) and
+# 3 incoming rank-2 messages.  Interior degree-4 site → 4 in-plane legs per layer.
 function build_bp_cavity(dim_chi::Int; dim_green::Int = DIM_GREEN)
     nb = NetBuilder()
     T = (:T, 0, 0)
     B = (:B, 0, 0)
     edge!(nb, T, B, dim_green)          # inter-layer green bond intact
-    caps!(nb, T, 1, dim_chi)            # open output leg (split rank-1, ket)
-    caps!(nb, B, 1, dim_chi)            # open output leg (split rank-1, bra)
+    open_leg!(nb, T, dim_chi)           # open output leg on ket (not a tensor)
+    open_leg!(nb, B, dim_chi)           # open output leg on bra (not a tensor)
     for _ in 1:3
         rank2_msg!(nb, T, B, dim_chi)   # 3 incoming rank-2 messages
     end
@@ -107,7 +115,8 @@ function main()
 
     println("=== BP sub-TN contraction complexity (TreeSA) ===")
     println("green bond = dim $DIM_GREEN, black bond = dim χ")
-    println("single-site double-layer region (L-independent)\n")
+    println("single-site double-layer region (L-independent)")
+    println("bp_cavity: open output legs on T/B (rank-2 result); not cap tensors\n")
 
     results = Dict{String, Vector{NamedTuple}}()
     for chi in chi_values
@@ -143,4 +152,6 @@ function main()
     println("\nWrote $md_path")
 end
 
-main()
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end
