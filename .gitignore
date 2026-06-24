@@ -1,6 +1,5 @@
 .DS_Store
 .vscode
 
-# TNQS (TensorNetworkQuantumSimulator.jl)
-TensorNetworkQuantumSimulator.jl/.git/
-TensorNetworkQuantumSimulator.jl/Manifest.toml
+# TNQS (TensorNetworkQuantumSimulator.jl) — local dependency, not tracked
+TensorNetworkQuantumSimulator.jl/
