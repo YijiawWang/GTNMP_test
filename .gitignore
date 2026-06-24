@@ -1,2 +1,6 @@
 .DS_Store
 .vscode
+
+# TNQS (TensorNetworkQuantumSimulator.jl)
+TensorNetworkQuantumSimulator.jl/.git/
+TensorNetworkQuantumSimulator.jl/Manifest.toml
