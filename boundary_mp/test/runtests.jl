@@ -1,7 +1,12 @@
 using Test
 using Random
+using LinearAlgebra: norm
 using TensorNetworkQuantumSimulator
-using ITensors: inds
+using TensorNetworkQuantumSimulator:
+    BoundaryMPSCache, supergraph, network, contraction_sequence, TreeSA, contract
+using NamedGraphs.PartitionedGraphs: partitions_graph, PartitionEdge
+using NamedGraphs: edges
+using ITensors: ITensor, inds, disable_warn_order
 
 const _SRC = joinpath(@__DIR__, "..", "src")
 include(joinpath(_SRC, "TNQSBoundaryMP.jl"))
@@ -80,6 +85,29 @@ end
         @test sum(p_fu) ≈ 1.0 atol = 1e-12
         @test p_fu ≈ p_theory rtol = 1e-8 atol = 1e-10
     end
+end
+
+@testset "incremental env cache equals from-scratch env (L=4)" begin
+    # The cache is a pure optimisation: the memoised incremental fold must reproduce the
+    # from-scratch TreeSA far-side contraction *exactly* (up to round-off) on every cut,
+    # in both sweep directions. This directly pins cache correctness without relying on the
+    # χ-truncated marginal being lossless (which it is NOT at L=4, χ=bond_dim²).
+    disable_warn_order()
+    state = uniform_state(MersenneTwister(9), 4; bond_dim = 2, physical_dim = 2)
+    c = center_vertex(state)
+    tn = projected_norm_network(state, c, 1)
+    cache = BoundaryMPSCache(tn, 4; partition_by = "row")
+    pg = partitions_graph(supergraph(cache))
+    maxdiff = 0.0
+    for pe in edges(pg), ppe in (PartitionEdge(pe), PartitionEdge(reverse(pe)))
+        vs = ExactEnvFullUpdateBMPS._far_vertices(cache, ppe)
+        ts = ITensor[copy(network(cache)[v]) for v in vs]
+        seq = contraction_sequence(ts; alg = "omeinsum", optimizer = TreeSA())
+        E_ref = contract(ts; sequence = seq)
+        E_cached = ExactEnvFullUpdateBMPS._env_tensor_cached(cache, ExactEnvFullUpdateBMPS._far_rows(cache, ppe))
+        maxdiff = max(maxdiff, norm(E_ref - E_cached))
+    end
+    @test maxdiff <= 1e-10
 end
 
 @testset "FU marginal is lossless at full bond dimension" begin

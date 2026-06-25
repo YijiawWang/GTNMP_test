@@ -6,10 +6,11 @@ module ExactEnvFullUpdateBMPS
 # is the far side of the cut contracted exactly via TreeSA (the `omeinsum` backend with
 # `optimizer = TreeSA()`). Allowed deps: TNQS + ITensors + stdlib.
 
-using LinearAlgebra
 using ITensors
-using ITensors: ITensor, Index, dim, commoninds, commonind, dag, svd, inds
+using ITensors: ITensor, Index, dim, commoninds, commonind, dag, svd, inds,
+    prime, noprime, replaceind, replaceinds, sim, delta, combiner
 using ITensorMPS
+using ITensorMPS: apply, linsolve, truncate
 using NamedGraphs: vertices, neighbors
 using NamedGraphs.GraphsExtensions: src, dst
 using NamedGraphs.PartitionedGraphs:
@@ -25,172 +26,52 @@ using ..TNQSBoundaryMP: UniformState, marginal
 
 export full_update_marginal, full_update_compress
 
-# ---- environment-weighted ALS (real, dense-block) -----------------------------------
-# Ordered index list (left_link, site_inds..., right_link) for site `i`, links via commoninds.
-function _ordered_inds(mps::MPS, site_inds, i)
-    N = length(mps)
-    order = Index[]
-    i == 1 || push!(order, only(commoninds(mps[i - 1], mps[i])))
-    append!(order, site_inds[i])
-    i == N || push!(order, only(commoninds(mps[i], mps[i + 1])))
-    return order
-end
-
-function _block(mps::MPS, site_inds, i)
-    order = _ordered_inds(mps, site_inds, i)
-    a = Array(mps[i], order...)
-    N = length(mps)
-    ld = i == 1 ? 1 : dim(order[1])
-    rd = i == N ? 1 : dim(order[end])
-    sd = prod(dim.(site_inds[i]))
-    return reshape(a, ld, sd, rd)
-end
-
-_blocks(mps::MPS, site_inds) = [_block(mps, site_inds, i) for i in 1:length(mps)]
-
-# w_i = b_i ⊗ b_i on bonds, squared on phys (so weight = |env|^2 along the chain).
-function _hadamard_square(env_blocks)
-    map(env_blocks) do t
-        ld, pd, rd = size(t)
-        out = zeros(Float64, ld * ld, pd, rd * rd)
-        for l1 in 1:ld, l2 in 1:ld, p in 1:pd, r1 in 1:rd, r2 in 1:rd
-            out[l1 + (l2 - 1) * ld, p, r1 + (r2 - 1) * rd] = real(t[l1, p, r1] * t[l2, p, r2])
+# Merged-D² messages carry ket+bra site legs; fuse to one index per site for linsolve.
+function _fuse_sites!(ψ::MPS, site_inds)
+    combiners = Vector{Union{ITensor, Nothing}}(undef, length(ψ))
+    for i in 1:length(ψ)
+        si = site_inds[i]
+        if length(si) <= 1
+            combiners[i] = nothing
+            continue
         end
-        m = maximum(abs, out)
-        m == 0 ? out : out ./ m
+        C = combiner(si...; tags = "SiteFuse_$i")
+        ψ[i] = ψ[i] * C
+        combiners[i] = C
     end
+    return combiners
 end
 
-_loc(l, p, r, ld, pd) = l + (p - 1) * ld + (r - 1) * ld * pd
-
-function _normal(left, w, right, dims)
-    ld, pd, rd = dims
-    n = ld * pd * rd
-    A = zeros(Float64, n, n)
-    for l in 1:ld, lp in 1:ld, p in 1:pd, r in 1:rd, rp in 1:rd,
-            wl in 1:size(w, 1), wr in 1:size(w, 3)
-        A[_loc(l, p, r, ld, pd), _loc(lp, p, rp, ld, pd)] +=
-            left[l, lp, wl] * w[wl, p, wr] * right[r, rp, wr]
+function _unfuse_sites!(ψ::MPS, combiners)
+    for i in 1:length(ψ)
+        C = combiners[i]
+        isnothing(C) || (ψ[i] = ψ[i] * dag(C))
     end
-    return A
+    return ψ
 end
 
-function _rhs(left, t, w, right, dims)
-    ld, pd, rd = dims
-    b = zeros(Float64, ld * pd * rd)
-    for l in 1:ld, p in 1:pd, r in 1:rd, tl in 1:size(t, 1), tr in 1:size(t, 3),
-            wl in 1:size(w, 1), wr in 1:size(w, 3)
-        b[_loc(l, p, r, ld, pd)] += left[l, tl, wl] * t[tl, p, tr] * w[wl, p, wr] * right[r, tr, wr]
-    end
-    return b
-end
-
-function _cl_normal(env, c, w)
-    nx = zeros(Float64, size(c, 3), size(c, 3), size(w, 3))
-    for l in 1:size(c, 1), lp in 1:size(c, 1), wl in 1:size(w, 1),
-            p in 1:size(c, 2), r in 1:size(c, 3), rp in 1:size(c, 3), wr in 1:size(w, 3)
-        nx[r, rp, wr] += env[l, lp, wl] * c[l, p, r] * c[lp, p, rp] * w[wl, p, wr]
-    end
-    return nx
-end
-
-function _cr_normal(c, w, env)
-    nx = zeros(Float64, size(c, 1), size(c, 1), size(w, 1))
-    for l in 1:size(c, 1), lp in 1:size(c, 1), wl in 1:size(w, 1),
-            p in 1:size(c, 2), r in 1:size(c, 3), rp in 1:size(c, 3), wr in 1:size(w, 3)
-        nx[l, lp, wl] += c[l, p, r] * c[lp, p, rp] * w[wl, p, wr] * env[r, rp, wr]
-    end
-    return nx
-end
-
-function _cl_mixed(env, c, t, w)
-    nx = zeros(Float64, size(c, 3), size(t, 3), size(w, 3))
-    for cl in 1:size(c, 1), tl in 1:size(t, 1), wl in 1:size(w, 1),
-            p in 1:size(c, 2), cr in 1:size(c, 3), tr in 1:size(t, 3), wr in 1:size(w, 3)
-        nx[cr, tr, wr] += env[cl, tl, wl] * c[cl, p, cr] * t[tl, p, tr] * w[wl, p, wr]
-    end
-    return nx
-end
-
-function _cr_mixed(c, t, w, env)
-    nx = zeros(Float64, size(c, 1), size(t, 1), size(w, 1))
-    for cl in 1:size(c, 1), tl in 1:size(t, 1), wl in 1:size(w, 1),
-            p in 1:size(c, 2), cr in 1:size(c, 3), tr in 1:size(t, 3), wr in 1:size(w, 3)
-        nx[cl, tl, wl] += c[cl, p, cr] * t[tl, p, tr] * w[wl, p, wr] * env[cr, tr, wr]
-    end
-    return nx
-end
-
-function _ridge_solve(A, b, reg)
-    reg == 0 && return Hermitian(A) \ b
-    s = real(tr(A)) / size(A, 1)
-    (!isfinite(s) || s <= 0) && (s = 1.0)
-    return (Hermitian(A) + reg * s * I(size(A, 1))) \ b
-end
-
-function _cl_normal_fold(comp, w, upto)
-    e = ones(Float64, 1, 1, 1)
-    for k in 1:upto; e = _cl_normal(e, comp[k], w[k]); end
-    return e
-end
-function _cr_normal_fold(comp, w, from)
-    e = ones(Float64, 1, 1, 1)
-    for k in length(comp):-1:from; e = _cr_normal(comp[k], w[k], e); end
-    return e
-end
-function _cl_mixed_fold(comp, t, w, upto)
-    e = ones(Float64, 1, 1, 1)
-    for k in 1:upto; e = _cl_mixed(e, comp[k], t[k], w[k]); end
-    return e
-end
-function _cr_mixed_fold(comp, t, w, from)
-    e = ones(Float64, 1, 1, 1)
-    for k in length(comp):-1:from; e = _cr_mixed(comp[k], t[k], w[k], e); end
-    return e
-end
-
-function _opt!(comp, t, w, i, reg)
-    ln = _cl_normal_fold(comp, w, i - 1)
-    rn = _cr_normal_fold(comp, w, i + 1)
-    lb = _cl_mixed_fold(comp, t, w, i - 1)
-    rb = _cr_mixed_fold(comp, t, w, i + 1)
-    A = _normal(ln, w[i], rn, size(comp[i]))
-    b = _rhs(lb, t[i], w[i], rb, size(comp[i]))
-    x = _ridge_solve(A, b, reg)
-    comp[i] = reshape(x, size(comp[i]))
-    return comp
-end
-
-function _to_mps(blocks, site_inds)
-    N = length(blocks)
-    links = [Index(size(blocks[i], 3), "fu_link_$i") for i in 1:(N - 1)]
-    ts = ITensor[]
-    for i in 1:N
-        b = blocks[i]; si = site_inds[i]; ld, sd, rd = size(b)
-        ord = Index[]; dims = Int[]
-        if i > 1; push!(ord, dag(links[i - 1])); push!(dims, dim(links[i - 1])); end
-        for s in si; push!(ord, s); push!(dims, dim(s)); end
-        if i < N; push!(ord, links[i]); push!(dims, dim(links[i])); end
-        push!(ts, ITensor(reshape(b, dims...), ord...))
-    end
-    return MPS(ts)
+function _fused_site_inds(ψ::MPS, site_inds, combiners)
+    return [
+        isnothing(combiners[i]) ? site_inds[i] : [only(ITensorMPS.siteinds(ψ, i))]
+        for i in 1:length(ψ)
+    ]
 end
 
 function full_update_compress(
-        target::MPS, env::MPS;
+        target::MPS, W::MPO;
         maxdim::Integer, nsweeps::Integer = 4, cutoff::Real = 1.0e-12, regularization::Real = 1.0e-10,
     )
-    site_inds = [collect(ITensorMPS.siteinds(target, i)) for i in 1:length(target)]
-    t = _blocks(target, site_inds)
-    w = _hadamard_square(_blocks(env, site_inds))
-    init = ITensorMPS.truncate(copy(target); maxdim = Int(maxdim), cutoff = Float64(cutoff))
-    comp = _blocks(init, site_inds)
-    N = length(comp)
-    for _ in 1:Int(nsweeps)
-        for i in 1:N; _opt!(comp, t, w, i, Float64(regularization)); end
-        for i in N:-1:1; _opt!(comp, t, w, i, Float64(regularization)); end
+    b = apply(W, target; cutoff = Float64(cutoff))
+    for i in 1:length(b)
+        b[i] = noprime(b[i])
     end
-    return _to_mps(comp, site_inds)
+    c0 = truncate(copy(target); maxdim = Int(maxdim), cutoff = Float64(cutoff))
+    c = linsolve(
+        W, b, c0, Float64(regularization), 1.0;
+        nsweeps = Int(nsweeps), maxdim = Int(maxdim), cutoff = Float64(cutoff),
+        updater_kwargs = (; ishermitian = true, tol = 1.0e-8, krylovdim = 30, maxiter = 30),
+    )
+    return c
 end
 
 # ---- exact rank-2L environment -------------------------------------------------------
@@ -229,13 +110,112 @@ function _exact_env_mps(cache::BoundaryMPSCache, pe, target::MPS)
     return _tensor_to_mps(E, site_inds)
 end
 
+const _ENV_MEMO = IdDict{Any, Dict{Vector{Int}, ITensor}}()
+_env_memo(cache) = get!(() -> Dict{Vector{Int}, ITensor}(), _ENV_MEMO, cache)
+
+function _far_rows(cache::BoundaryMPSCache, pe)
+    pg = partitions_graph(supergraph(cache))
+    srcp = parent(src(pe)); dstp = parent(dst(pe))
+    visited = Set([srcp]); stack = [dstp]; rows = Int[]
+    while !isempty(stack)
+        p = pop!(stack); p in visited && continue
+        push!(visited, p); push!(rows, p)
+        for nb in neighbors(pg, p); nb in visited || push!(stack, nb); end
+    end
+    return sort(rows; rev = true)
+end
+
+_row_tensors(cache, row::Int) =
+    ITensor[copy(network(cache)[v]) for v in vertices(supergraph(cache), PartitionVertex(row))]
+
+# Partition row (Int) that contains the center vertex.
+function _center_row(cache::BoundaryMPSCache, center)
+    sg = supergraph(cache)
+    for p in vertices(partitions_graph(sg))
+        center in vertices(sg, PartitionVertex(p)) && return p
+    end
+    error("center vertex $center not found in any partition")
+end
+
+# Exact far-side environment tensor for `rows`, built bottom-up and memoised.
+#
+# Two memo tiers:
+# - `shared_env` (cross-s): a far region that EXCLUDES the center row is byte-identical
+#   across the d marginal branches — only the center tensor changes with s, and the cut
+#   bonds are the same `state` `Index` objects — so it is built once and reused for all s.
+# - `_env_memo(cache)` (within-s): center-INCLUDING regions are s-dependent, so they stay
+#   keyed by the per-s cache identity.
+function _env_tensor_cached(
+        cache::BoundaryMPSCache, rows::Vector{Int};
+        shared_env::Union{Nothing, Dict{Vector{Int}, ITensor}} = nothing, center_row = nothing,
+    )
+    isempty(rows) && return ITensor(1.0)
+    shareable = !isnothing(shared_env) && !isnothing(center_row) && !(center_row in rows)
+    shareable && haskey(shared_env, rows) && return shared_env[rows]
+    memo = _env_memo(cache)
+    !shareable && haskey(memo, rows) && return memo[rows]
+
+    row_ts = _row_tensors(cache, rows[1])
+    ts = if length(rows) == 1
+        row_ts
+    else
+        sub = _env_tensor_cached(cache, rows[2:end]; shared_env, center_row)
+        vcat(row_ts, ITensor[sub])
+    end
+    seq = contraction_sequence(ts; alg = "omeinsum", optimizer = TreeSA())
+    E = contract(ts; sequence = seq)
+    shareable ? (shared_env[rows] = E) : (memo[rows] = E)
+    return E
+end
+
+function _exact_env_mps_cached(
+        cache::BoundaryMPSCache, pe, target::MPS;
+        shared_env = nothing, center_row = nothing,
+    )
+    E = _env_tensor_cached(cache, _far_rows(cache, pe); shared_env, center_row)
+    site_inds = [collect(ITensorMPS.siteinds(target, i)) for i in 1:length(target)]
+    return _tensor_to_mps(E, site_inds)
+end
+
+function _squared_env_mpo(env::MPS, site_inds, row_site_inds)
+    env = copy(env)
+    env_combiners = _fuse_sites!(env, site_inds)
+    local_fused = _fused_site_inds(env, site_inds, env_combiners)
+    N = length(env)
+    ts = ITensor[]
+    for i in 1:N
+        e1 = env[i]
+        e2 = prime(e1; tags = "envlink")
+        s_local = only(local_fused[i])
+        s_row = only(row_site_inds[i])
+        sa = sim(s_local); sb = sim(s_local)
+        e1 = replaceind(e1, s_local => sa)
+        e2 = replaceind(e2, s_local => sb)
+        Wi = e1 * e2 * delta(sa, sb, s_local, prime(s_local))
+        Wi = replaceinds(Wi, s_local => s_row, prime(s_local) => prime(s_row))
+        push!(ts, Wi)
+    end
+    for i in 1:(N - 1)
+        link2 = commoninds(ts[i], ts[i + 1])
+        C = combiner(link2...; tags = "Wlink_$i")
+        ts[i] = ts[i] * C
+        ts[i + 1] = ts[i + 1] * dag(C)
+    end
+    return MPO(ts)
+end
+
 # ---- TNQS BMPS integration -----------------------------------------------------------
 function set_default_kwargs(alg::Algorithm"full_update_exact_env", cache::BoundaryMPSCache)
     nsweeps = get(alg.kwargs, :nsweeps, 4)
     cutoff = get(alg.kwargs, :cutoff, 1.0e-12)
     regularization = get(alg.kwargs, :regularization, 1.0e-10)
     normalize = get(alg.kwargs, :normalize, true)
-    return Algorithm("full_update_exact_env"; nsweeps, cutoff, regularization, normalize)
+    shared_env = get(alg.kwargs, :shared_env, nothing)
+    center = get(alg.kwargs, :center, nothing)
+    return Algorithm(
+        "full_update_exact_env";
+        nsweeps, cutoff, regularization, normalize, shared_env, center,
+    )
 end
 
 function update_message!(
@@ -251,11 +231,20 @@ function update_message!(
     O = ITensorMPS.MPO(cache, src(pe))
     M = ITensorMPS.MPS(cache, prev_pe)
     raw = generic_apply(O, M; cutoff = alg.kwargs.cutoff, normalize = false, maxdim = typemax(Int))
-    env = _exact_env_mps(cache, pe, raw)
+    shared_env = get(alg.kwargs, :shared_env, nothing)
+    center = get(alg.kwargs, :center, nothing)
+    center_row = isnothing(center) ? nothing : _center_row(cache, center)
+    env = _exact_env_mps_cached(cache, pe, raw; shared_env, center_row)
+    site_inds = [collect(ITensorMPS.siteinds(raw, i)) for i in 1:length(raw)]
+    raw_fused = copy(raw)
+    combiners = _fuse_sites!(raw_fused, site_inds)
+    row_site_inds = _fused_site_inds(raw_fused, site_inds, combiners)
+    W = _squared_env_mpo(env, site_inds, row_site_inds)
     compressed = full_update_compress(
-        raw, env; maxdim, nsweeps = alg.kwargs.nsweeps,
+        raw_fused, W; maxdim, nsweeps = alg.kwargs.nsweeps,
         cutoff = alg.kwargs.cutoff, regularization = alg.kwargs.regularization,
     )
+    compressed = _unfuse_sites!(compressed, combiners)
     alg.kwargs.normalize && (compressed = ITensors.normalize(compressed))
     return set_interpartition_message!(cache, compressed, pe)
 end
@@ -264,6 +253,10 @@ function full_update_marginal(
         state::UniformState, center, chi::Integer;
         nsweeps::Integer = 4, cutoff::Real = 1.0e-12, regularization::Real = 1.0e-10, maxiter::Integer = 1,
     )
+    # Cross-s far-side environment cache: shared by the d marginal branches (`marginal`
+    # calls `f` once per physical value, all closing over this dict). Far regions that
+    # exclude the center row are identical across s, so they are contracted once.
+    shared_env = Dict{Vector{Int}, ITensor}()
     f = function (tn)
         cache = BoundaryMPSCache(tn, Int(chi); partition_by = "row")
         cache = update(
@@ -271,6 +264,7 @@ function full_update_marginal(
             message_update_alg = Algorithm(
                 "full_update_exact_env"; nsweeps = Int(nsweeps),
                 cutoff = Float64(cutoff), regularization = Float64(regularization), normalize = true,
+                shared_env = shared_env, center = center,
             ),
             tolerance = nothing,
         )

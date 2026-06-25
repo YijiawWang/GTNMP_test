@@ -3,3 +3,6 @@
 
 # TNQS (TensorNetworkQuantumSimulator.jl) — local dependency, not tracked
 TensorNetworkQuantumSimulator.jl/
+
+# Local planning docs (not pushed)
+boundary_mp/docs/
