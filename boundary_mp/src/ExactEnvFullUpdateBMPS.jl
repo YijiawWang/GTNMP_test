@@ -94,7 +94,11 @@ function _tensor_to_mps(E::ITensor, site_inds)
     ts = ITensor[]; rest = E; linkprev = nothing
     for i in 1:(N - 1)
         leftinds = i == 1 ? site_inds[i] : vcat(site_inds[i], Index[linkprev])
-        U, S, V = svd(rest, leftinds...; lefttags = "envlink_$i")
+        # All env links share the tag "envlink" so that `prime(e1; tags = "envlink")` in
+        # `_squared_env_mpo` matches *every* env bond. ITensors tag matching is exact-token,
+        # so a per-link tag like "envlink_$i" would not be matched by "envlink" (the prime
+        # would be a no-op), collapsing the squared-env metric to a separable product.
+        U, S, V = svd(rest, leftinds...; lefttags = "envlink")
         push!(ts, U); rest = S * V; linkprev = commonind(U, S)
     end
     push!(ts, rest)
