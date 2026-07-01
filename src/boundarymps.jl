@@ -1,31 +1,13 @@
 module TNMPBoundaryMPS
 
 # Boundary-MPS double-layer marginals / partition function for the random PEPS
-# states built by `tnmp.jl`. The actual contraction is delegated to
-# TensorNetworkQuantumSimulator (TNQS): the double-layer norm network is wrapped
+# states built by the shared state layer in `state_models.jl`. The actual
+# contraction is delegated to
+# TensorNetworkQuantumSimulator: the double-layer norm network is wrapped
 # in a `BoundaryMPSCache`, converged with `update`, and read out via
 # `partitionfunction` / `free_energy`.
-#
-# TNQS is resolved in this order:
-#   1. already installed in the active Julia environment
-#   2. ENV["TNQS_PROJECT"] if set
-#   3. sibling checkout at ../TensorNetworkQuantumSimulator_q.jl (monorepo layout)
 
 const _SRC_DIR = @__DIR__
-const _ROOT = normpath(joinpath(_SRC_DIR, ".."))
-
-function resolve_tnqs_project()
-    env = get(ENV, "TNQS_PROJECT", "")
-    !isempty(env) && return normpath(env)
-    sibling = normpath(joinpath(_ROOT, "..", "TensorNetworkQuantumSimulator_q.jl"))
-    isdir(sibling) && return sibling
-    return nothing
-end
-
-const _TNQS_PROJECT = resolve_tnqs_project()
-if _TNQS_PROJECT !== nothing && !in(_TNQS_PROJECT, LOAD_PATH)
-    pushfirst!(LOAD_PATH, _TNQS_PROJECT)
-end
 
 include(joinpath(_SRC_DIR, "tnmp.jl"))
 
@@ -33,6 +15,7 @@ using Dictionaries: Dictionary
 using ITensors: ITensors, dim
 using NamedGraphs: vertices
 using TensorNetworkQuantumSimulator
+using TensorNetworkQuantumSimulator: freenergy
 
 # Re-export the TNMP state machinery so callers can `using .TNMPBoundaryMPS`
 # and build instances without separately including `tnmp.jl` (this keeps a
@@ -97,7 +80,7 @@ function boundarymps_marginal_weights(
     for s in 1:d
         net = to_tnqs_projected_network(psi, target, s)
         cache = BoundaryMPSCache(net, bmps_chi; partition_by)
-        value = TensorNetworkQuantumSimulator.free_energy(
+        value = freenergy(
             TensorNetworkQuantumSimulator.update(cache; bmps_update_kwargs...),
         )
         push!(log_weights, real(value))

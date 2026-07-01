@@ -23,13 +23,13 @@ function _tree_graph()
 end
 
 # Use the first-order neighborhood instead of the grid window (L is ignored).
-_first_order(gp, g, node) = TNMPTest.first_order_region(g, node)
+_first_order(gp, g, node) = first_order_region(g, node)
 
 @testset "first-order neighborhood on a tree" begin
     @testset "rank2 matrix messages: exact on a double-layer tree" begin
         rng = MersenneTwister(20260613)
         g = _tree_graph()
-        psi = TNMPTest.random_state(rng, g; physical_dim = 2, bond_dim = 3)
+        psi = random_state(rng, g; physical_dim = 2, bond_dim = 3)
         cache = TNMPTest.TNMPCache(psi, 1; region_fn = _first_order)
         info = TNMPTest.run_message_passing!(cache; max_iter = 200, tol = 1e-12)
 
@@ -47,7 +47,7 @@ _first_order(gp, g, node) = TNMPTest.first_order_region(g, node)
         # amplitude would not define a probability under real-part normalisation).
         rng = MersenneTwister(20260613)
         g = _tree_graph()
-        psi = TNMPRank1.random_state(rng, g; physical_dim = 2, bond_dim = 3, element_type = Float64)
+        psi = random_state(rng, g; physical_dim = 2, bond_dim = 3, element_type = Float64)
         cache = TNMPRank1.TNMPRank1Cache(psi, 1; region_fn = _first_order)
         info = TNMPRank1.run_message_passing_single_layer!(cache; max_iter = 200, tol = 1e-12)
 

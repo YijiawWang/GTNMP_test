@@ -1,0 +1,69 @@
+WARNING: using TensorNetworkQuantumSimulator.TensorNetworkState in module Main conflicts with an existing identifier.
+__CELL_2_END__
+fully-frustrated model:  L=4  chi=2  K=1.0  field=0.2  seed=7
+grid = 4 x 4  (16 sites, 24 bonds)   center = (2, 2)
+__CELL_4_END__
+__CELL_6_END__
+site-region |R| (center)  = 9   (3x3 window)
+bond-region |R| (min/max) = 4/6
+
+neighborhood  R[site (2, 2)]  (3x3 window):
+   o---o---o---.
+   |   |   |   |
+   o---C---o---.
+   |   |   |   |
+   o---o---o---.
+   |   |   |   |
+   .---.---.---.
+
+   C = center,   o = R[site] neighborhood,   . = outside
+
+cavity for the message into (2, 2) along in_edge = (4, 1) => (3, 1) :
+   cavity = R[bond (3, 1) => (4, 1)] \ R[site (2, 2)] = Any[(4, 1), (4, 2)]
+
+   o---o---o---.
+   |   |   |   |
+   o---C---o---.
+   |   |   |   |
+   o---o---o---.
+   |   |   |   |
+   *---*---.---.
+
+   C = center,   o = receiver R[site],   * = cavity = R[bond] \ R[site],   . = outside
+
+boundary edges into R[site (2, 2)] (outside -> inside) = the incoming messages:
+   (4, 1) => (3, 1)
+   (4, 2) => (3, 2)
+   (1, 4) => (1, 3)
+   (2, 4) => (2, 3)
+   (4, 3) => (3, 3)
+   (3, 4) => (3, 3)
+__CELL_8_END__
+__CELL_10_END__
+center neighborhood sub-TN:  24 tensors
+   TreeSA  tc = 12.66  (log2 #ops),   sc = 8.0  (log2 max intermediate)
+__CELL_12_END__
+__CELL_14_END__
+cavity sub-TN for (4, 1) => (3, 1) -> (2, 2) :  6 tensors,  tc = 7.0,  sc = 4.0
+
+message passing (region_L = 3):  converged=true  iters=11  diff=0.0
+   TNMP marginal  = [0.1818, 0.8182]
+   exact marginal = [0.1624, 0.8376]    (L1 = 0.0389)
+__CELL_16_END__
+__CELL_18_END__
+BP:  converged=false  iters=2000  diff=0.5252
+   BP marginal    = [0.2625, 0.7375]    (L1 = 0.2002)
+   exact marginal = [0.1624, 0.8376]
+
+TreeSA complexity (log2)     TNMP rank-2          BP (single-site)
+cavity tc (mean/max)         8.48 /9.75         6.79 /8.0  
+cavity sc (mean/max)         4.6  /5.0          4.17 /5.0  
+neighborhood tc (marginal)   12.66               7.04 
+neighborhood sc (marginal)   8.0                 4.0  
+#cavity contractions         134                  48
+__CELL_20_END__
+exact marginal            = [0.1624, 0.8376]
+
+method        converged  iters   marginal                  L1(.,exact)
+BP (1-site)   false     2000    [0.2625, 0.7375]          0.2002
+TNMP rL=3     true      11      [0.1818, 0.8182]          0.0389

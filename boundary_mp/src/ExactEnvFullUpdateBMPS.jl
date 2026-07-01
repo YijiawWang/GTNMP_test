@@ -1,10 +1,10 @@
 module ExactEnvFullUpdateBMPS
 
 # Full-update boundary-MPS compression weighted by the EXACT rank-2L environment.
-# The forward sweep is inherited from TensorNetworkQuantumSimulator.jl (treesa branch,
-# v0.3.10) BoundaryMPSCache; only the message-compression step is replaced. The environment
-# is the far side of the cut contracted exactly via TreeSA (the `omeinsum` backend with
-# `optimizer = TreeSA()`). Allowed deps: TNQS + ITensors + stdlib.
+# The forward sweep is inherited from TensorNetworkQuantumSimulator.jl's BoundaryMPSCache;
+# only the message-compression step is replaced. The environment is the far side of the cut
+# contracted exactly via TreeSA (the `omeinsum` backend with `optimizer = TreeSA()`). Allowed
+# deps: TensorNetworkQuantumSimulator + ITensors + stdlib.
 
 using ITensors
 using ITensors: ITensor, Index, dim, commoninds, commonind, dag, svd, inds,
@@ -204,7 +204,7 @@ function _squared_env_mpo(env::MPS, site_inds, row_site_inds)
     return MPO(ts)
 end
 
-# ---- TNQS BMPS integration -----------------------------------------------------------
+# ---- TensorNetworkQuantumSimulator BMPS integration ----------------------------------
 function set_default_kwargs(alg::Algorithm"full_update_exact_env", cache::BoundaryMPSCache)
     nsweeps = get(alg.kwargs, :nsweeps, 4)
     cutoff = get(alg.kwargs, :cutoff, 1.0e-12)
@@ -224,13 +224,15 @@ function update_message!(
     )
     prev_pe = prev_partitionedge(cache, pe)
     local_alg = set_default_kwargs(
-        Algorithm("ITensorMPS"; cutoff = alg.kwargs.cutoff, normalize = alg.kwargs.normalize), cache,
+        Algorithm("zipup"; cutoff = alg.kwargs.cutoff, normalize = alg.kwargs.normalize), cache,
     )
     isnothing(prev_pe) && return update_message!(local_alg, cache, pe; maxdim)
 
-    O = ITensorMPS.MPO(cache, src(pe))
-    M = ITensorMPS.MPS(cache, prev_pe)
-    raw = generic_apply(O, M; cutoff = alg.kwargs.cutoff, normalize = false, maxdim = typemax(Int))
+    mpo, mps, right_inds = TensorNetworkQuantumSimulator._bmps_apply_inputs(cache, pe)
+    raw = MPS(generic_apply(
+        mpo, mps, right_inds;
+        cutoff = alg.kwargs.cutoff, normalize = false, maxdim = typemax(Int),
+    ))
     shared_env = get(alg.kwargs, :shared_env, nothing)
     center = get(alg.kwargs, :center, nothing)
     center_row = isnothing(center) ? nothing : _center_row(cache, center)
@@ -246,7 +248,7 @@ function update_message!(
     )
     compressed = _unfuse_sites!(compressed, combiners)
     alg.kwargs.normalize && (compressed = ITensors.normalize(compressed))
-    return set_interpartition_message!(cache, compressed, pe)
+    return set_interpartition_message!(cache, [compressed[i] for i in 1:length(compressed)], pe)
 end
 
 function full_update_marginal(

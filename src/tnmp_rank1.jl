@@ -19,14 +19,16 @@ module TNMPRank1
 #     of the same edge with its current message, exactly like the original
 #     vector-message TNMP applied to `2k` bonds instead of `k`.
 
-include("tnmp.jl")
-
+# Reuse the already-loaded `TNMPTest` solver module rather than re-including
+# `tnmp.jl` (which would create a *second* `TNMPTest` with its own, incompatible
+# `TensorNetworkState` type). Callers must `include("src/tnmp.jl")` before this
+# file, e.g. as the test suite and scripts already do.
 using ITensors: ITensor, dim, onehot, prime
 using NamedGraphs: NamedEdge, NamedGraph, src, dst, vertices
 using Random: AbstractRNG, MersenneTwister, rand
 import ITensors
 
-import .TNMPTest:
+import ..TNMPTest:
     TensorNetworkState,
     virtualinds,
     norm_factors,
@@ -34,8 +36,6 @@ import .TNMPTest:
     incoming_boundary_edges,
     reverse_edge,
     subdivision_graph,
-    region_vertices,
-    first_order_region,
     contraction_sequence,
     contract_all,
     contraction_sc,
@@ -46,14 +46,6 @@ import .TNMPTest:
     message_passing_nthreads,
     _ensure_contraction_sequence!,
     prewarm_contraction_sequences!,
-    # re-exported public helpers so a script only needs `using .TNMPRank1`
-    random_alpha_state,
-    random_state,
-    random_uniform_complex_state,
-    weak_entangled_biased_circuit_state,
-    tfim_imaginary_time_state,
-    spin_glass_pair_factor_state,
-    fully_frustrated_pair_factor_state,
     exact_marginal,
     graph,
     siteinds
@@ -62,17 +54,9 @@ export TNMPRank1Cache,
     run_message_passing!,
     tnmp_marginal,
     contraction_sc,
-    first_order_region,
     incoming_boundary_edges,
     marginal_tensors,
     message_tensors,
-    random_alpha_state,
-    random_state,
-    random_uniform_complex_state,
-    weak_entangled_biased_circuit_state,
-    tfim_imaginary_time_state,
-    spin_glass_pair_factor_state,
-    fully_frustrated_pair_factor_state,
     exact_marginal,
     exact_marginal_single_layer,
     run_message_passing_single_layer!,
@@ -127,14 +111,15 @@ struct TNMPRank1Cache
     sequence_lock::ReentrantLock
 end
 
-# See `TNMPCache`: `region_fn(gp, g, node)` selects the neighborhood. Defaults
-# to the L*L grid window; pass `(gp, g, node) -> first_order_region(g, node)`
-# for the graph-based first-order neighborhood (then `L` is ignored).
+# See `TNMPCache`: `region_fn(gp, g, node)` selects the (model-dependent)
+# neighborhood and is required. Build it at the model level, e.g.
+# `region_fn = grid_region_fn(L)` or `region_fn = first_order_region_fn()` from
+# `examples/neighborhoods.jl`.
 function TNMPRank1Cache(
         psi::TensorNetworkState,
         L::Integer;
         normalize::Symbol = :l1sum,
-        region_fn = (gp, g, node) -> region_vertices(gp, node, L),
+        region_fn,
     )
     normalize in (:l2, :l1sum) ||
         throw(ArgumentError("normalize must be :l2 or :l1sum"))

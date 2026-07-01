@@ -5,8 +5,7 @@
 # (CLI flags / output). The boundary-MPS solver itself lives in
 # `TNMP_test/src/boundarymps.jl` (module `TNMPBoundaryMPS`).
 #
-# Self-contained example for TNMP_test. After installing TensorNetworkQuantumSimulator
-# locally, run:
+# Self-contained example for TNMP_test. After running `./setup.sh`, run:
 #
 #   julia --project=TNMP_test TNMP_test/examples/boundarymps_random_double_layer.jl
 #
@@ -15,13 +14,8 @@
 #   --bmps-chi-min 2 --bmps-chi-max 64 --bmps-epsilon 1e-4 --bmps-partition-by row
 #   --output path/to/result.jls
 #
-# TensorNetworkQuantumSimulator is resolved by `src/boundarymps.jl` in this order:
-#   1. already installed in the active Julia environment
-#   2. ENV["TNQS_PROJECT"] if set
-#   3. sibling checkout at ../TensorNetworkQuantumSimulator_q.jl (monorepo layout)
-#
-# To install TNQS into this project:
-#   julia --project=TNMP_test -e 'using Pkg; Pkg.develop(path="path/to/TensorNetworkQuantumSimulator")'
+# TensorNetworkQuantumSimulator is resolved from the active project dependency declared in
+# `Project.toml`, which points at the local `TensorNetworkQuantumSimulator.jl` checkout.
 
 module TNMPBoundaryMPSDemo
 
@@ -33,6 +27,8 @@ const _ROOT = normpath(joinpath(@__DIR__, ".."))
 
 include(joinpath(_ROOT, "src", "boundarymps.jl"))
 using .TNMPBoundaryMPS
+
+include(joinpath(_ROOT, "examples", "state_models.jl"))
 
 using NamedGraphs.NamedGraphGenerators: named_grid
 using Random: MersenneTwister
@@ -119,7 +115,7 @@ function run_boundarymps_marginal(cfg::BoundaryMPSConfig = BoundaryMPSConfig())
     center = grid_center(cfg.L)
 
     println("sampling random alpha PEPS: L=$(cfg.L), chi=$(cfg.chi), alpha=$(cfg.alpha), center=$center")
-    psi = TNMPTest.random_alpha_state(
+    psi = random_alpha_state(
         rng, g;
         alpha = cfg.alpha,
         physical_dim = 2,

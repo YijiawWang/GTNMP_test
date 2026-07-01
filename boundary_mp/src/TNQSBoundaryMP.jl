@@ -1,8 +1,8 @@
 module TNQSBoundaryMP
 
-# Targets TensorNetworkQuantumSimulator.jl on the `treesa` branch (v0.3.10), which ships the
-# TreeSA contraction order through OMEinsumContractionOrders (selected via the `omeinsum`
-# backend in src/contraction_sequences.jl).
+# Targets the local TensorNetworkQuantumSimulator.jl checkout, which ships the TreeSA
+# contraction order through OMEinsumContractionOrders (selected via the `omeinsum` backend in
+# src/contraction_sequences.jl).
 # Allowed dependencies: TensorNetworkQuantumSimulator, ITensors/ITensorMPS, stdlib.
 
 using LinearAlgebra
@@ -98,7 +98,7 @@ function marginal(state::UniformState, center, contract_scalar)
     return normalize_marginal(weights)
 end
 
-# Shallow wrapper over TNQS BMPS with the ITensorMPS (SVD) message update.
+# Shallow wrapper over TensorNetworkQuantumSimulator BMPS with the zipup message update.
 function bmps_marginal(
         state::UniformState, center, chi::Integer;
         cutoff::Real = 1.0e-12, maxiter::Integer = 1,
@@ -107,7 +107,7 @@ function bmps_marginal(
         cache = BoundaryMPSCache(tn, Int(chi); partition_by = "row")
         cache = update(
             cache; alg = "bp", maxiter = Int(maxiter),
-            message_update_alg = Algorithm("ITensorMPS"; cutoff = Float64(cutoff), normalize = true),
+            message_update_alg = Algorithm("zipup"; cutoff = Float64(cutoff), normalize = true),
             tolerance = nothing,
         )
         return partitionfunction(cache)

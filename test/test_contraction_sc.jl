@@ -16,8 +16,8 @@
 
     @testset "rank2 (merged matrix messages)" begin
         rng = MersenneTwister(20260611)
-        psi = TNMPTest.random_state(rng, g; physical_dim = 2, bond_dim = chi)
-        cache = TNMPTest.TNMPCache(psi, 3)
+        psi = random_state(rng, g; physical_dim = 2, bond_dim = chi)
+        cache = TNMPTest.TNMPCache(psi, 3; region_fn = grid_region_fn(3))
         bedges = TNMPTest.incoming_boundary_edges(TNMPTest.graph(psi), cache.regions[(:site, center)])
 
         # Each message update contracts a cavity → md rank2_cavity (χ = 8) = 13.
@@ -31,8 +31,8 @@
 
     @testset "rank1 (per-leg vector messages)" begin
         rng = MersenneTwister(20260611)
-        psi = TNMPRank1.random_state(rng, g; physical_dim = 2, bond_dim = chi)
-        cache = TNMPRank1.TNMPRank1Cache(psi, 3)
+        psi = random_state(rng, g; physical_dim = 2, bond_dim = chi)
+        cache = TNMPRank1.TNMPRank1Cache(psi, 3; region_fn = grid_region_fn(3))
         bedges = TNMPRank1.incoming_boundary_edges(TNMPRank1.graph(psi), cache.regions[(:site, center)])
 
         # Each message update: md rank1_cavity (χ = 8) = 9. The actual rank-1

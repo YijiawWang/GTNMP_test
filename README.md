@@ -4,20 +4,24 @@ Minimal TNMP extraction with runnable double-layer marginal examples.
 
 ## Setup
 
-1. Clone this repository.
-2. Install [TensorNetworkQuantumSimulator](https://github.com/ITensor/TensorNetworkQuantumSimulator) into the project environment:
+Run the bootstrap script (installs Julia 1.11.5, instantiates packages, links the local
+TensorNetworkQuantumSimulator checkout from
+[`JoeyT1994/TensorNetworkQuantumSimulator.jl`](https://github.com/JoeyT1994/TensorNetworkQuantumSimulator.jl)):
 
 ```bash
-julia --project=TNMP_test -e 'using Pkg; Pkg.develop(path="path/to/TensorNetworkQuantumSimulator")'
+./setup.sh
 ```
 
-If you use the monorepo layout with `TensorNetworkQuantumSimulator_q.jl` as a sibling directory, the examples will find it automatically.
-
-You can also point to a custom checkout:
+Or manually:
 
 ```bash
-export TNQS_PROJECT=/path/to/TensorNetworkQuantumSimulator
+julia --project=TNMP_test -e 'using Pkg; Pkg.develop(path="TNMP_test/TensorNetworkQuantumSimulator.jl"); Pkg.instantiate()'
 ```
+
+TensorNetworkQuantumSimulator is provided by the local checkout at
+`TNMP_test/TensorNetworkQuantumSimulator.jl`. That checkout is the latest local copy of
+[`JoeyT1994/TensorNetworkQuantumSimulator.jl`](https://github.com/JoeyT1994/TensorNetworkQuantumSimulator.jl)
+and is declared in `Project.toml` through `[sources]`.
 
 ## Examples
 
@@ -44,4 +48,10 @@ julia --project=TNMP_test TNMP_test/examples/boundarymps_random_double_layer.jl 
 
 ```bash
 julia --project=TNMP_test TNMP_test/test/runtests.jl
+```
+
+boundary_mp tests:
+
+```bash
+julia --project=TNMP_test TNMP_test/boundary_mp/test/runtests.jl
 ```

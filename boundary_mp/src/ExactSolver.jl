@@ -1,10 +1,10 @@
 module ExactSolver
 
 # Exact contraction of a projected norm network into a scalar, using the TreeSA
-# contraction-order optimiser shipped in TensorNetworkQuantumSimulator.jl (treesa branch,
-# v0.3.10). TreeSA now comes from OMEinsumContractionOrders and is selected via the
-# `alg = "omeinsum"` backend with `optimizer = TreeSA()`.
-# Depends only on TNQS + ITensors + the shared builder in TNQSBoundaryMP.
+# contraction-order optimiser shipped in TensorNetworkQuantumSimulator.jl. TreeSA comes from
+# OMEinsumContractionOrders and is selected via the `alg = "omeinsum"` backend with
+# `optimizer = TreeSA()`.
+# Depends only on TensorNetworkQuantumSimulator + ITensors + the shared builder in TNQSBoundaryMP.
 
 using ITensors: ITensor
 using TensorNetworkQuantumSimulator

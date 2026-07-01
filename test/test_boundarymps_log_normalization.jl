@@ -1,4 +1,4 @@
-include(joinpath(@__DIR__, "..", "..", "scripts", "run_boundarymps_marginal.jl"))
+include(joinpath(@__DIR__, "..", "scripts", "double-layer-tn", "src", "run_boundarymps_marginal.jl"))
 
 using .TNMPTest
 using Test: @test, @testset

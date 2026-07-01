@@ -1,8 +1,8 @@
 #!/usr/bin/env julia
 # Center-site marginal of a uniform-random real state via exact (TreeSA), SVD-BMPS, and
-# exact-environment full-update BMPS. Depends on TensorNetworkQuantumSimulator.jl on the
-# `treesa` branch (v0.3.10). Run:
-#   julia --project=TNMP_test/TensorNetworkQuantumSimulator.jl \
+# exact-environment full-update BMPS. Depends on the local TensorNetworkQuantumSimulator.jl
+# checkout. Run:
+#   julia --project=TNMP_test \
 #       TNMP_test/boundary_mp/scripts/uniform_double_layer_sweep.jl
 
 using Printf

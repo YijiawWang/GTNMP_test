@@ -1,7 +1,7 @@
 # Double-layer TNMP rank-2 marginal on a random complex PEPS.
 #
-# For full benchmarks (rank1 / rank2 / boundary-MPS, chi=8,16), use run_all:
-#   JL_INIT_MODE=uniform_complex JULIA_NUM_THREADS=64 scripts/run_all_marginals.sh
+# For the retained benchmark batch (BP / TNMP rank-2 / BMPS, each toggleable), use:
+#   scripts/run_uniform_complex_bmps_bp_tnmp_rank2.sh
 #
 # Quick local smoke test:
 #   julia --project=TNMP_test TNMP_test/examples/random_uniform_complex_double_layer_marginal.jl
@@ -11,6 +11,9 @@ include(joinpath(@__DIR__, "..", "src", "tnmp.jl"))
 using .TNMPTest
 using NamedGraphs.NamedGraphGenerators: named_grid
 using Random: MersenneTwister
+
+include(joinpath(@__DIR__, "state_models.jl"))
+include(joinpath(@__DIR__, "neighborhoods.jl"))
 
 function main()
     rng = MersenneTwister(7)
@@ -22,7 +25,7 @@ function main()
     tol = 1e-8
 
     psi = random_uniform_complex_state(rng, g; physical_dim = 2, bond_dim = 2, lo, hi)
-    cache = TNMPCache(psi, 3; normalize = :l2)
+    cache = TNMPCache(psi, 3; normalize = :l2, region_fn = grid_region_fn(3))
     info = run_message_passing!(cache; max_iter, tol)
 
     p_tnmp = tnmp_marginal(cache, center)

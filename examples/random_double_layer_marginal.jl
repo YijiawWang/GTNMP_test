@@ -4,6 +4,9 @@ using .TNMPTest
 using NamedGraphs.NamedGraphGenerators: named_grid
 using Random: MersenneTwister
 
+include(joinpath(@__DIR__, "state_models.jl"))
+include(joinpath(@__DIR__, "neighborhoods.jl"))
+
 function main()
     rng = MersenneTwister(7)
     g = named_grid((3, 3))
@@ -11,7 +14,7 @@ function main()
     alpha = 0.5
 
     psi = random_alpha_state(rng, g; alpha, physical_dim = 2, bond_dim = 2)
-    cache = TNMPCache(psi, 3; normalize = :l2)
+    cache = TNMPCache(psi, 3; normalize = :l2, region_fn = grid_region_fn(3))
     info = run_message_passing!(cache; max_iter = 50, tol = 1e-8)
 
     p_tnmp = tnmp_marginal(cache, center)
