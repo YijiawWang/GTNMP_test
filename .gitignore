@@ -1,8 +1,19 @@
 .DS_Store
 .vscode
 
-# TNQS (TensorNetworkQuantumSimulator.jl) — local dependency, not tracked
+# TNQS — local dependency, not tracked
 TensorNetworkQuantumSimulator.jl/
 
 # Local planning docs (not pushed)
 boundary_mp/docs/
+
+# contraction_process_tn: local working folder — keep only the figures (figs/*.png, figs/*.jpg)
+/contraction_process_tn/*
+!/contraction_process_tn/figs
+/contraction_process_tn/figs/*
+!/contraction_process_tn/figs/*.png
+!/contraction_process_tn/figs/*.jpg
+
+# scripts run outputs (not tracked)
+/scripts/results/
+/scripts/**/results/
